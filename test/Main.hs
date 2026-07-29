@@ -6,6 +6,7 @@ import EnvelopeSpec qualified
 import FilterSpec qualified
 import OscSpec qualified
 import RandomSpec qualified
+import ResampleSpec qualified
 import Test.Tasty
 import WavSpec qualified
 
@@ -19,5 +20,6 @@ main =
       , OscSpec.tests
       , EnvelopeSpec.tests
       , FilterSpec.tests
+      , ResampleSpec.tests
       , WavSpec.tests
       ]

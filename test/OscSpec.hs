@@ -6,7 +6,7 @@ import Data.Ord (comparing)
 import Data.Vector.Unboxed qualified as U
 import Sound.Sig.Core
 import Sound.Sig.Osc
-import Spectral (spectrum)
+import Spectral (blackman, spectrum)
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -312,12 +312,6 @@ belowFundamentalDb xs frame = 20 * logBase 10 (worst / peak)
     -- утечку ниже -100 дБ.
     guard = 25
     worst = maximum (take (fundBin - guard - 1) (drop 2 mags))
-
--- | Окно Блэкмана: боковые лепестки около -58 дБ и быстрый спад.
-blackman :: Int -> U.Vector Double
-blackman n = U.generate n $ \i ->
-  let t = 2 * pi * fromIntegral i / fromIntegral (n - 1)
-   in 0.42 - 0.5 * cos t + 0.08 * cos (2 * t)
 
 -- Шум --------------------------------------------------------------------
 

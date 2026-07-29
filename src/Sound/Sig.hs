@@ -4,6 +4,7 @@ module Sound.Sig
   , module Sound.Sig.Osc
   , module Sound.Sig.Envelope
   , module Sound.Sig.Filter
+  , module Sound.Sig.Resample
   , module Sound.Sig.IO
   ) where
 
@@ -12,3 +13,4 @@ import Sound.Sig.Envelope
 import Sound.Sig.Filter
 import Sound.Sig.IO
 import Sound.Sig.Osc
+import Sound.Sig.Resample

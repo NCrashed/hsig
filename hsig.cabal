@@ -45,6 +45,7 @@ library
     Sound.Sig.IO
     Sound.Sig.Osc
     Sound.Sig.Random
+    Sound.Sig.Resample
 
   build-depends:
     , base        >=4.19 && <5
@@ -76,6 +77,7 @@ test-suite hsig-test
     FilterSpec
     OscSpec
     RandomSpec
+    ResampleSpec
     Spectral
     WavSpec
 
