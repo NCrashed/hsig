@@ -8,10 +8,12 @@ import Data.Bits (shiftL, (.|.))
 import Data.ByteString qualified as BS
 import Data.Int (Int16)
 import Data.List (isInfixOf)
+import Data.Vector.Unboxed qualified as U
 import GHC.Float (castWord32ToFloat, double2Float)
 import GHC.IO.Handle (hDuplicate, hDuplicateTo)
 import Sound.Sig.Core
 import Sound.Sig.IO
+import Sound.Sig.Osc (noise)
 import System.Directory (doesFileExist)
 import System.FilePath ((</>))
 import System.IO (hClose, hFlush, readFile', stderr)
@@ -167,7 +169,26 @@ roundTrip =
           assertBool ("среднее " <> show mean) (abs (mean - level) < 0.05)
           assertBool "выход за 1 LSB" (all (\v -> abs v <= 1) got)
           assertBool "дизер не размазывает" (maximum got > minimum got)
+    , -- Регрессия: дизер и noise ходят в один генератор, и без разведения
+      -- индексов дизер оказывался ровно средним двух соседних сэмплов
+      -- noise с тем же seed.
+      testCase "дизер не повторяет поток noise" $ do
+        let n = 4000
+            ns = U.fromListN (2 * n) (samples slowEnv (noise 0))
+            want = [(ns U.! (2 * i) + ns U.! (2 * i + 1)) / 2 | i <- [0 .. n - 1]]
+        withWav slowEnv Bits16 (fromSamples (replicate n 0)) $ \bs _ -> do
+          let got = [fromIntegral (s16 bs (at Bits16 i)) | i <- [0 .. n - 1]] :: [Double]
+              r = correlation got want
+          assertBool ("корреляция " <> show r) (abs r < 0.1)
     ]
+
+correlation :: [Double] -> [Double] -> Double
+correlation xs ys = cov / sqrt (var xs * var ys)
+  where
+    n = fromIntegral (length xs)
+    mean vs = sum vs / n
+    var vs = sum [(v - mean vs) * (v - mean vs) | v <- vs] / n
+    cov = sum (zipWith (\a b -> (a - mean xs) * (b - mean ys)) xs ys) / n
 
 -- Клиппинг -------------------------------------------------------------
 

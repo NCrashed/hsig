@@ -176,12 +176,20 @@ encodeSample Float32 _ x = floatLE (double2Float x)
 encodeSample Bits16 d x = int16LE (fromIntegral (quantize 16 d x))
 encodeSample Bits24 d x = int24LE (quantize 24 d x)
 
+-- | Дизер и noise берут значения из одного генератора, поэтому индексы
+-- разведены: без сдвига при @noise 0@ выходило бы точное тождество
+-- @dither i == (noise0 (2*i) + noise0 (2*i+1)) \/ 2@. Номер сэмпла до этого
+-- сдвига не дотягивается: 2^48 сэмплов это почти двести лет при 48 кГц.
+ditherStream :: Int
+ditherStream = 0x1000000000000
+
 -- | TPDF из двух независимых равномерных, размах +-1 LSB.
 dither :: Env -> BitDepth -> Int -> Double
 dither _ Float32 _ = 0
-dither env _ i = doubleAt seed (2 * i) + doubleAt seed (2 * i + 1) - 1
+dither env _ i = doubleAt seed (j + 1) + doubleAt seed j - 1
   where
     seed = envSeed env
+    j = ditherStream + 2 * i
 
 quantize :: Int -> Double -> Double -> Int
 quantize bits d x = max lo (min hi (round (x * scale + d)))

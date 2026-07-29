@@ -20,6 +20,7 @@ module Sound.Sig.Core
     -- * Построение
   , constant
   , fromSamples
+  , blockOf
 
     -- * Выгрузка
   , samples
