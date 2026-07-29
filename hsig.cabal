@@ -40,6 +40,7 @@ library
   exposed-modules:
     Sound.Sig
     Sound.Sig.Core
+    Sound.Sig.Envelope
     Sound.Sig.IO
     Sound.Sig.Osc
     Sound.Sig.Random
@@ -70,6 +71,7 @@ test-suite hsig-test
   ghc-options:    -threaded -rtsopts -with-rtsopts=-N
   other-modules:
     CoreSpec
+    EnvelopeSpec
     OscSpec
     RandomSpec
     WavSpec
