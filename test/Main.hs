@@ -8,7 +8,9 @@ import FilterSpec qualified
 import NonlinSpec qualified
 import OscSpec qualified
 import RandomSpec qualified
+import RenderSpec qualified
 import ResampleSpec qualified
+import ScoreSpec qualified
 import Test.Tasty
 import WavSpec qualified
 
@@ -25,5 +27,7 @@ main =
       , ResampleSpec.tests
       , NonlinSpec.tests
       , DelaySpec.tests
+      , ScoreSpec.tests
+      , RenderSpec.tests
       , WavSpec.tests
       ]

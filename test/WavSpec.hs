@@ -196,7 +196,7 @@ correlation xs ys = cov / sqrt (var xs * var ys)
 -- этой же группы тоже клиппуют и пишут туда же.
 clipping :: TestTree
 clipping =
-  sequentialTestGroup
+  dependentTestGroup
     "клиппинг"
     AllFinish
     [ testCase "чистый сигнал: отчёт пустой" $

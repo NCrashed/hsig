@@ -1,2 +1,6 @@
 # Тесты законов пишут выражения, избыточные по построению: в этом и проверка.
 - ignore: {name: Evaluate, within: CoreSpec}
+- ignore: {name: Functor law, within: ScoreSpec}
+- ignore: {name: "Monad law, left identity", within: ScoreSpec}
+- ignore: {name: "Monad law, right identity", within: ScoreSpec}
+- ignore: {name: "Use <$>", within: ScoreSpec}

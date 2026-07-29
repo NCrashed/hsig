@@ -48,11 +48,14 @@ library
     Sound.Sig.Nonlin
     Sound.Sig.Osc
     Sound.Sig.Random
+    Sound.Sig.Render
     Sound.Sig.Resample
+    Sound.Sig.Score
 
   build-depends:
     , base        >=4.19 && <5
     , bytestring  >=0.11 && <0.13
+    , containers  >=0.6  && <0.9
     , directory   >=1.3  && <1.4
     , filepath    >=1.4  && <1.6
     , vector      >=0.13 && <0.14
@@ -82,7 +85,9 @@ test-suite hsig-test
     NonlinSpec
     OscSpec
     RandomSpec
+    RenderSpec
     ResampleSpec
+    ScoreSpec
     Spectral
     WavSpec
 

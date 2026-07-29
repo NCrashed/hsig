@@ -7,6 +7,8 @@ module Sound.Sig
   , module Sound.Sig.Nonlin
   , module Sound.Sig.Delay
   , module Sound.Sig.Resample
+  , module Sound.Sig.Score
+  , module Sound.Sig.Render
   , module Sound.Sig.IO
   ) where
 
@@ -17,4 +19,6 @@ import Sound.Sig.Filter
 import Sound.Sig.IO
 import Sound.Sig.Nonlin
 import Sound.Sig.Osc
+import Sound.Sig.Render
 import Sound.Sig.Resample
+import Sound.Sig.Score

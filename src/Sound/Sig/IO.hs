@@ -8,13 +8,15 @@ module Sound.Sig.IO
   ( BitDepth (..)
   , ClipReport (..)
   , writeWav
+  , readWav
   ) where
 
 import Control.Monad (when)
-import Data.Bits (shiftR, (.&.))
+import Data.Bits (shiftL, shiftR, (.&.), (.|.))
+import Data.ByteString qualified as BS
 import Data.ByteString.Builder
 import Data.Vector.Unboxed qualified as U
-import GHC.Float (double2Float)
+import GHC.Float (castWord32ToFloat, double2Float)
 import Sound.Sig.Core
 import Sound.Sig.Random (doubleAt)
 import System.Directory (createDirectoryIfMissing)
@@ -81,6 +83,70 @@ tooBig path =
   path
     <> ": данные не помещаются в 32-битные поля WAV (предел 4 ГиБ), файл оборван."
     <> " Ограничьте сигнал по длине (takeSec) или пишите стемами."
+
+-- Чтение --------------------------------------------------------------------
+
+-- | Читает моно-WAV: отдаёт частоту дискретизации и сэмплы. Понимает то,
+-- что пишет writeWav: PCM 16 и 24 бита, IEEE float 32.
+readWav :: FilePath -> IO (Double, U.Vector Double)
+readWav path = do
+  bs <- BS.readFile path
+  let fail' why = ioError (userError (path <> ": " <> why))
+  when (BS.length bs < 12) $ fail' "файл короче заголовка"
+  when (tagAt bs 0 /= riffTag || tagAt bs 8 /= waveTag) $ fail' "это не RIFF/WAVE"
+  let cs = chunksFrom bs 12
+  case (lookup fmtTag cs, lookup dataTag cs) of
+    (Just (fmtAt, _), Just (dataAt, dataLen)) -> do
+      let format = u16 bs fmtAt
+          channels = u16 bs (fmtAt + 2)
+          rate = u32 bs (fmtAt + 4)
+          bits = u16 bs (fmtAt + 14)
+      when (channels /= 1) $ fail' "поддерживается только моно"
+      decode <- case (format, bits) of
+        (1, 16) -> pure (\o -> fromIntegral (asInt16 (u16 bs o)) / 32768)
+        (1, 24) -> pure (\o -> fromIntegral (asInt24 (u24 bs o)) / 8388608)
+        (3, 32) -> pure (realToFrac . castWord32ToFloat . fromIntegral . u32 bs)
+        _ -> fail' ("неизвестный формат " <> show format <> "/" <> show bits)
+      let step = bits `div` 8
+          n = dataLen `div` step
+      pure (fromIntegral rate, U.generate n (\i -> decode (dataAt + i * step)))
+    _ -> fail' "нет чанка fmt или data"
+
+-- | Список чанков: тег, смещение данных, длина. Нечётные дополняются
+-- байтом, он в длину не входит.
+chunksFrom :: BS.ByteString -> Int -> [(BS.ByteString, (Int, Int))]
+chunksFrom bs off
+  | off + 8 > BS.length bs = []
+  | otherwise = (tagAt bs off, (off + 8, size)) : chunksFrom bs (off + 8 + size + size `mod` 2)
+  where
+    size = u32 bs (off + 4)
+
+tagAt :: BS.ByteString -> Int -> BS.ByteString
+tagAt bs o = BS.take 4 (BS.drop o bs)
+
+riffTag, waveTag, fmtTag, dataTag :: BS.ByteString
+riffTag = "RIFF"
+waveTag = "WAVE"
+fmtTag = "fmt "
+dataTag = "data"
+
+u16 :: BS.ByteString -> Int -> Int
+u16 bs o = byteAt bs o .|. (byteAt bs (o + 1) `shiftL` 8)
+
+u24 :: BS.ByteString -> Int -> Int
+u24 bs o = u16 bs o .|. (byteAt bs (o + 2) `shiftL` 16)
+
+u32 :: BS.ByteString -> Int -> Int
+u32 bs o = u16 bs o .|. (u16 bs (o + 2) `shiftL` 16)
+
+byteAt :: BS.ByteString -> Int -> Int
+byteAt bs o = if o < BS.length bs then fromIntegral (BS.index bs o) else 0
+
+asInt16 :: Int -> Int
+asInt16 v = if v >= 0x8000 then v - 0x10000 else v
+
+asInt24 :: Int -> Int
+asInt24 v = if v >= 0x800000 then v - 0x1000000 else v
 
 -- Заголовок -------------------------------------------------------------
 

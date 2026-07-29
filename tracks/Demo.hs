@@ -71,9 +71,47 @@ track =
     , sweep 4
     ]
 
+-- Ритм из паттернов ---------------------------------------------------------
+
+-- | Такт это два цикла: при четырёх долях в цикле выходит 120 ударов в
+-- минуту. Темп задаётся паттерном, отдельного поля под него нет.
+bar :: Pattern a -> Pattern a
+bar = slow 2
+
+-- | Бас: пила через лестничный фильтр с быстрой огибающей катоффа.
+bassInst :: Instrument
+bassInst n =
+  ladder cut 0.7 (saw (constant (noteFreq n)) * 0.5)
+    * adsr 0.005 0.1 0.5 0.06 (noteDur n * 0.9)
+    * constant (noteAmp n * 0.6)
+  where
+    cut = 200 + 2500 * expdecay 0.07
+
+-- | Хэт: отфильтрованный шум с мгновенной атакой.
+hatInst :: Instrument
+hatInst n =
+  highpass 6000 (noise 1)
+    * adsr 0.001 0.04 0 0.01 (noteDur n * 0.4)
+    * constant (noteAmp n * 0.25)
+
+-- | Четыре ноты баса и восьмые хэта. Каждый стем пишется на диск отдельно
+-- и сводится из файлов (разд. 8).
+-- | Трапеция по краям обязательна: рендер режет по времени жёстко, и без
+-- неё последняя нота обрывается на середине релиза, то есть щелчком.
+beat :: [Stem]
+beat =
+  [ Stem "bass" (play bassInst (bar (listToPat (map noteOf [55, 55, 73.42, 55]))) * trapezoid beatSec)
+  , Stem "hat" (play hatInst (bar (fast 8 (degradeBy 0.25 (pure (noteOf 1))))) * trapezoid beatSec)
+  ]
+
+beatSec :: Double
+beatSec = 8
+
 main :: IO ()
 main = do
-  report <- writeWav env Bits16 path track
-  putStrLn (path <> ": пик " <> show (clipPeak report))
+  report <- writeWav env Bits16 tour track
+  putStrLn (tour <> ": пик " <> show (clipPeak report))
+  beatPath <- renderTrack env beatSec "out/beat.wav" beat
+  putStrLn (beatPath <> ": ритм из паттернов, 4 такта")
   where
-    path = "out/demo.wav"
+    tour = "out/demo.wav"
