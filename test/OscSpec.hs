@@ -1,14 +1,12 @@
 -- | Осцилляторы: фаза, синус, аддитивные волны, алиасинг, шум.
 module OscSpec (tests) where
 
-import Data.Complex (Complex, magnitude)
 import Data.List (maximumBy)
 import Data.Ord (comparing)
-import Data.Vector.Storable qualified as V
 import Data.Vector.Unboxed qualified as U
-import Numeric.FFT.Vector.Unnormalized qualified as FFT
 import Sound.Sig.Core
 import Sound.Sig.Osc
+import Spectral (spectrum)
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -75,12 +73,6 @@ stepOf f = 2 * pi * f / envRate defaultEnv
 
 wrapped :: Double -> Double
 wrapped p = p - 2 * pi * fromIntegral (floor (p / (2 * pi)) :: Int)
-
--- | Модуль спектра, ненормированный R2C.
-spectrum :: U.Vector Double -> [Double]
-spectrum v = map magnitude (V.toList spec)
-  where
-    spec = FFT.run FFT.dftR2C (V.fromList (U.toList v)) :: V.Vector (Complex Double)
 
 sineTests :: TestTree
 sineTests =

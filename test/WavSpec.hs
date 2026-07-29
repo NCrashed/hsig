@@ -282,8 +282,8 @@ misc =
     , testCase "нулевая частота дискретизации это ошибка" $
         withSystemTempDirectory "hsig-test" $ \dir -> do
           r <-
-            try (writeWav defaultEnv {envRate = 0} Bits16 (dir </> "t.wav") (fromSamples [0])) ::
-              IO (Either IOException ClipReport)
+            try (writeWav defaultEnv {envRate = 0} Bits16 (dir </> "t.wav") (fromSamples [0]))
+              :: IO (Either IOException ClipReport)
           case r of
             Left e -> assertBool (show e) ("envRate" `isInfixOf` show e)
             Right _ -> assertFailure "ожидали ошибку"

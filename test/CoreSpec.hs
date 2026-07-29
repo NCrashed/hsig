@@ -209,8 +209,8 @@ edges =
       -- подвесил бы рендер без единого сообщения.
       testCase "envBlock меньше 1 это ошибка, а не зависание" $ do
         r <-
-          try (evaluate (length (samples defaultEnv {envBlock = 0} (fromSamples [1, 2])))) ::
-            IO (Either ErrorCall Int)
+          try (evaluate (length (samples defaultEnv {envBlock = 0} (fromSamples [1, 2]))))
+            :: IO (Either ErrorCall Int)
         case r of
           Left _ -> pure ()
           Right n -> assertFailure ("ожидали ошибку, получили " <> show n)

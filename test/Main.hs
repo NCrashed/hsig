@@ -3,6 +3,7 @@ module Main (main) where
 
 import CoreSpec qualified
 import EnvelopeSpec qualified
+import FilterSpec qualified
 import OscSpec qualified
 import RandomSpec qualified
 import Test.Tasty
@@ -17,5 +18,6 @@ main =
       , RandomSpec.tests
       , OscSpec.tests
       , EnvelopeSpec.tests
+      , FilterSpec.tests
       , WavSpec.tests
       ]

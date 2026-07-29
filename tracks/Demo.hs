@@ -25,6 +25,12 @@ trapezoid dur = line [(0, 0), (edge, 1), (dur - edge, 1), (dur, 0)]
   where
     edge = 0.01
 
+-- | Пила через лестничный фильтр: катофф едет сверху вниз, резонанс поёт.
+filtered :: Double -> Sig
+filtered dur = ladder cut 0.85 (saw 110 * 0.3) * trapezoid dur
+  where
+    cut = line [(0, 8000), (dur, 200)]
+
 -- | Свип 20 - 8000 Гц: на нём слышно, что гармоники не заворачиваются.
 sweep :: Double -> Sig
 sweep dur = saw (fromSamples freqs) * trapezoid dur * 0.4
@@ -45,6 +51,7 @@ track =
     , voice tri 110 1.5
     , voice (const (noise 0)) 0 1
     , pluck 220 1.5
+    , filtered 3
     , sweep 4
     ]
 

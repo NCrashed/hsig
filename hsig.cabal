@@ -41,6 +41,7 @@ library
     Sound.Sig
     Sound.Sig.Core
     Sound.Sig.Envelope
+    Sound.Sig.Filter
     Sound.Sig.IO
     Sound.Sig.Osc
     Sound.Sig.Random
@@ -72,8 +73,10 @@ test-suite hsig-test
   other-modules:
     CoreSpec
     EnvelopeSpec
+    FilterSpec
     OscSpec
     RandomSpec
+    Spectral
     WavSpec
 
   build-depends:
