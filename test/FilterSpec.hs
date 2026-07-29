@@ -14,6 +14,7 @@ tests =
   testGroup
     "Filter"
     [ onepoleTests
+    , highpassTests
     , ladderLinear
     , ladderResonant
     ]
@@ -91,6 +92,33 @@ onepoleTests =
         let big = render defaultEnv (onepole 1000 (impulse 1))
             small = render defaultEnv {envBlock = 64} (onepole 1000 (impulse 1))
         assertBool "расходится" (U.maximum (U.map abs (U.zipWith (-) big small)) < 1e-15)
+    ]
+
+-- Фильтр верхних частот ----------------------------------------------------
+
+-- | Точный отклик ФВЧ первого порядка: дополнение однополюсника до единицы.
+highpassMag :: Double -> Double -> Double
+highpassMag fc f = t / sqrt (sq (tan (pi * fc / rate)) + sq t)
+  where
+    t = tan (pi * f / rate)
+
+highpassTests :: TestTree
+highpassTests =
+  testGroup
+    "highpass"
+    [ testCase "постоянный ток не проходит" $
+        case responseOf 1 (highpass 1000) of
+          dc : _ -> assertBool (show dc) (dc < 1e-12)
+          [] -> assertFailure "пустой спектр"
+    , testCase "совпадает с аналитическим ФВЧ" $ do
+        let db = worstDb (highpassMag 1000) (0.45 * rate) (responseOf 1 (highpass 1000))
+        assertBool (show db <> " dB") (db < 0.05)
+    , -- Ради этого он и нужен: убрать DC, не тронув звук.
+      testCase "срез в единицы герц не трогает звук" $ do
+        let db = worstDb (highpassMag 5) (0.45 * rate) (responseOf 1 (highpass 5))
+        assertBool (show db <> " dB") (db < 0.05)
+        let at100 = 20 * logBase 10 (highpassMag 5 100)
+        assertBool (show at100) (abs at100 < 0.02)
     ]
 
 -- Лестничный фильтр без резонанса -----------------------------------------
@@ -213,7 +241,7 @@ ladderResonant =
         let xs = render defaultEnv (ring 0.99 0.3)
             win = U.toList (U.slice (round (0.1 * rate)) (round (0.1 * rate)) xs)
             ups = length (filter id (zipWith (\a b -> a < 0 && b >= 0) win (drop 1 win)))
-            hz = fromIntegral ups / 0.1
+            hz = fromIntegral ups / 0.1 :: Double
         assertBool (show hz <> " Гц") (abs (hz - 1000) < 60)
     , testCase "при res=1 остаётся ограниченным" $ do
         let xs = render defaultEnv (ring 1 0.5)

@@ -37,12 +37,15 @@ common opts
 library
   import:          opts
   hs-source-dirs:  src
+  other-modules:   Sound.Sig.Block
   exposed-modules:
     Sound.Sig
     Sound.Sig.Core
+    Sound.Sig.Delay
     Sound.Sig.Envelope
     Sound.Sig.Filter
     Sound.Sig.IO
+    Sound.Sig.Nonlin
     Sound.Sig.Osc
     Sound.Sig.Random
     Sound.Sig.Resample
@@ -73,8 +76,10 @@ test-suite hsig-test
   ghc-options:    -threaded -rtsopts -with-rtsopts=-N
   other-modules:
     CoreSpec
+    DelaySpec
     EnvelopeSpec
     FilterSpec
+    NonlinSpec
     OscSpec
     RandomSpec
     ResampleSpec

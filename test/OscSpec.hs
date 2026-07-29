@@ -6,7 +6,7 @@ import Data.Ord (comparing)
 import Data.Vector.Unboxed qualified as U
 import Sound.Sig.Core
 import Sound.Sig.Osc
-import Spectral (blackman, spectrum)
+import Spectral (blackman, spectrum, strayDb)
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -177,13 +177,8 @@ waveTests =
 
 -- Алиасинг ---------------------------------------------------------------
 
--- | Худший бин вне гармоник, в дБ относительно фундаментальной. Частоты
--- берём целыми, окно не нужно: гармоники попадают ровно в бины, утечки нет.
-strayDb :: Int -> [Double] -> Double
-strayDb m mags = 20 * logBase 10 (worst / (mags !! m))
-  where
-    worst = maximum [v | (k, v) <- zip [0 :: Int ..] mags, k `mod` m /= 0]
-
+-- | Частоты берём целыми, окно не нужно: гармоники попадают ровно в бины,
+-- утечки нет.
 onlyHarmonics :: String -> Int -> [Double] -> Assertion
 onlyHarmonics what m mags =
   assertBool (what <> ": посторонняя энергия на " <> show db <> " dB") (db < -100)

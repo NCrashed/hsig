@@ -2,8 +2,10 @@
 module Main (main) where
 
 import CoreSpec qualified
+import DelaySpec qualified
 import EnvelopeSpec qualified
 import FilterSpec qualified
+import NonlinSpec qualified
 import OscSpec qualified
 import RandomSpec qualified
 import ResampleSpec qualified
@@ -21,5 +23,7 @@ main =
       , EnvelopeSpec.tests
       , FilterSpec.tests
       , ResampleSpec.tests
+      , NonlinSpec.tests
+      , DelaySpec.tests
       , WavSpec.tests
       ]

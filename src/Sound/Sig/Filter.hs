@@ -4,12 +4,12 @@
 -- живёт здесь, внутри runST, наружу торчит только Fx (разд. 2 дизайна).
 module Sound.Sig.Filter
   ( onepole
+  , highpass
   , ladder
   ) where
 
-import Control.Monad.ST (runST)
 import Data.Vector.Unboxed qualified as U
-import Data.Vector.Unboxed.Mutable qualified as UM
+import Sound.Sig.Block (align2, align3, sweep)
 import Sound.Sig.Core
 
 -- Однополюсник ------------------------------------------------------------
@@ -19,6 +19,16 @@ onepole :: Sig -> Fx
 onepole = filter1 0 step
   where
     step env s fc = pole (gainOf env fc) s
+
+-- | Дополнение однополюсника до единицы, то есть ФВЧ первого порядка.
+--
+-- Основное применение это блокиратор постоянной составляющей после
+-- асимметричных шейперов: срез в единицы герц убирает DC, не трогая звук.
+-- Вход используется дважды, поэтому share: правило разд. 3.
+highpass :: Sig -> Fx
+highpass cutoff x = zipChunks Truncate (-) sx (onepole cutoff sx)
+  where
+    sx = share x
 
 -- | Одно TPT-звено: выход и новое состояние.
 --
@@ -117,38 +127,3 @@ filter2 s0 step ctrl1 ctrl2 input = Sig $ \env ->
             (out, s') = sweep f (U.length x) s
          in out : go s' rest
    in rechunk (blockOf env) (go s0 (align3 (runSig ctrl1 env) (runSig ctrl2 env) (runSig input env)))
-
--- | Пробегает блок с состоянием.
-sweep :: (s -> Int -> (Double, s)) -> Int -> s -> (U.Vector Double, s)
-sweep f n s0 = runST $ do
-  out <- UM.new n
-  let loop !i !s
-        | i >= n = pure s
-        | otherwise = do
-            let (y, s') = f s i
-            UM.unsafeWrite out i y
-            loop (i + 1) s'
-  sEnd <- loop 0 s0
-  v <- U.unsafeFreeze out
-  pure (v, sEnd)
-
--- | Остаток блока после отрезанных n сэмплов.
-keep :: Int -> U.Vector Double -> Chunks -> Chunks
-keep n v vs
-  | U.length v > n = U.drop n v : vs
-  | otherwise = vs
-
--- | Выравнивает два потока по общим границам, обрезая по короткому.
-align2 :: Chunks -> Chunks -> [(U.Vector Double, U.Vector Double)]
-align2 (a : as) (b : bs) = (U.take n a, U.take n b) : align2 (keep n a as) (keep n b bs)
-  where
-    n = min (U.length a) (U.length b)
-align2 _ _ = []
-
--- | То же для трёх потоков.
-align3 :: Chunks -> Chunks -> Chunks -> [(U.Vector Double, U.Vector Double, U.Vector Double)]
-align3 (a : as) (b : bs) (c : cs) =
-  (U.take n a, U.take n b, U.take n c) : align3 (keep n a as) (keep n b bs) (keep n c cs)
-  where
-    n = min (U.length a) (min (U.length b) (U.length c))
-align3 _ _ _ = []

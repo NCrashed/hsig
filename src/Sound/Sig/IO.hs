@@ -33,6 +33,8 @@ data ClipReport = ClipReport
   -- ^ время первого выхода за диапазон, секунды
   , clipPeak :: !Double
   -- ^ максимум модуля сигнала
+  , clipBad :: !Int
+  -- ^ сэмплов, оказавшихся NaN или бесконечностью
   }
   deriving (Eq, Show)
 
@@ -51,6 +53,7 @@ writeWav env depth path sig = do
     pure stats
   let report = toReport env stats
   when (clipCount report > 0) $ hPutStrLn stderr (clipMessage path report)
+  when (clipBad report > 0) $ hPutStrLn stderr (badMessage path report)
   pure report
   where
     rate = round (envRate env)
@@ -127,10 +130,11 @@ data Stats = Stats
   { stCount :: !Int
   , stFirst :: !(Maybe Int)
   , stPeak :: !Double
+  , stBad :: !Int
   }
 
 emptyStats :: Stats
-emptyStats = Stats {stCount = 0, stFirst = Nothing, stPeak = 0}
+emptyStats = Stats {stCount = 0, stFirst = Nothing, stPeak = 0, stBad = 0}
 
 toReport :: Env -> Stats -> ClipReport
 toReport env st =
@@ -138,7 +142,15 @@ toReport env st =
     { clipCount = stCount st
     , clipFirst = (\i -> fromIntegral i / envRate env) <$> stFirst st
     , clipPeak = stPeak st
+    , clipBad = stBad st
     }
+
+badMessage :: FilePath -> ClipReport -> String
+badMessage path r =
+  path
+    <> ": не-числа, сэмплов "
+    <> show (clipBad r)
+    <> " (NaN или бесконечность), записаны нулями"
 
 clipMessage :: FilePath -> ClipReport -> String
 clipMessage path r =
@@ -159,22 +171,36 @@ encodeChunk env depth i0 st0 = U.ifoldl' step (mempty, st0)
        in (b <> encodeSample depth (dither env depth i) x, note i x st)
 
 note :: Int -> Double -> Stats -> Stats
-note i x st =
-  Stats
-    { stCount = if over then stCount st + 1 else stCount st
-    , stFirst = case stFirst st of
-        Nothing | over -> Just i
-        seen -> seen
-    , stPeak = max a (stPeak st)
-    }
+note i x st
+  -- NaN и бесконечность мимо сравнений: abs NaN > 1 ложно, поэтому считаем
+  -- их отдельно. Иначе round NaN записал бы в файл мусор молча.
+  | bad =
+      st {stBad = stBad st + 1}
+  | otherwise =
+      Stats
+        { stCount = if over then stCount st + 1 else stCount st
+        , stFirst = case stFirst st of
+            Nothing | over -> Just i
+            seen -> seen
+        , stPeak = max a (stPeak st)
+        , stBad = stBad st
+        }
   where
+    bad = isNaN x || isInfinite x
     a = abs x
     over = a > 1
 
+-- | Не-числа записываем нулём: мусор от round NaN хуже тишины, а факт всё
+-- равно уходит в отчёт и в stderr.
+finite :: Double -> Double
+finite x
+  | isNaN x || isInfinite x = 0
+  | otherwise = x
+
 encodeSample :: BitDepth -> Double -> Double -> Builder
-encodeSample Float32 _ x = floatLE (double2Float x)
-encodeSample Bits16 d x = int16LE (fromIntegral (quantize 16 d x))
-encodeSample Bits24 d x = int24LE (quantize 24 d x)
+encodeSample Float32 _ x = floatLE (double2Float (finite x))
+encodeSample Bits16 d x = int16LE (fromIntegral (quantize 16 d (finite x)))
+encodeSample Bits24 d x = int24LE (quantize 24 d (finite x))
 
 -- | Дизер и noise берут значения из одного генератора, поэтому индексы
 -- разведены: без сдвига при @noise 0@ выходило бы точное тождество

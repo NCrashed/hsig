@@ -222,13 +222,24 @@ clipping =
         withSystemTempDirectory "hsig-test" $ \dir -> do
           let loud = dir </> "loud.wav"
               quiet = dir </> "quiet.wav"
-          (_, msg) <- captureStderr $ do
+          let broken = dir </> "broken.wav"
+          (rep, msg) <- captureStderr $ do
             _ <- writeWav slowEnv Bits16 loud (fromSamples [2])
             _ <- writeWav slowEnv Bits16 quiet (fromSamples [0.5])
-            pure ()
+            writeWav slowEnv Bits16 broken (fromSamples [0 / 0, 1 / 0, 0.5])
           assertBool ("нет сообщения: " <> show msg) (loud `isInfixOf` msg)
           assertBool ("слова клиппинг нет: " <> show msg) ("клиппинг" `isInfixOf` msg)
           assertBool ("чистый наследил: " <> show msg) (not (quiet `isInfixOf` msg))
+          -- NaN мимо сравнений с единицей, поэтому считается отдельно и
+          -- тоже обязан быть слышен в логе.
+          clipBad rep @?= 2
+          clipCount rep @?= 0
+          assertBool ("нет сообщения о не-числах: " <> show msg) (broken `isInfixOf` msg)
+          -- Записаны нулём, но дизер поверх остаётся, поэтому в файле не
+          -- строгий ноль, а тишина в пределах одного LSB.
+          bytes <- BS.readFile broken
+          assertBool "NaN просочился" (abs (s16 bytes (at Bits16 0)) <= 1)
+          assertBool "бесконечность просочилась" (abs (s16 bytes (at Bits16 1)) <= 1)
     ]
 
 -- Детерминизм ----------------------------------------------------------

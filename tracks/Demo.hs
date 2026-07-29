@@ -1,6 +1,8 @@
 -- | Демо-трек: подряд всё, что умеет синтезатор на текущем этапе.
 module Demo (main) where
 
+import Control.Category ((>>>))
+import Data.Function ((&))
 import Sound.Sig
 
 env :: Env
@@ -31,6 +33,19 @@ filtered dur = ladder cut 0.85 (saw 110 * 0.3) * trapezoid dur
   where
     cut = line [(0, 8000), (dur, 200)]
 
+-- | Почти цепочка из разд. 9: фильтр с резонансом и шейпер внутри
+-- oversample, следом гребёнка. Катофф тянется дольше ноты, чтобы срез
+-- задержки в oversample не обрезал хвост огибающей.
+gritty :: Double -> Sig
+gritty dur =
+  saw 110
+    * 0.3
+    & oversample 8 (ladder cut 0.8 >>> shaper 4)
+    & comb 0.011 0.6
+    & (* (trapezoid dur * 0.3))
+  where
+    cut = line [(0, 6000), (dur + 0.1, 300)]
+
 -- | Свип 20 - 8000 Гц: на нём слышно, что гармоники не заворачиваются.
 sweep :: Double -> Sig
 sweep dur = saw (fromSamples freqs) * trapezoid dur * 0.4
@@ -52,6 +67,7 @@ track =
     , voice (const (noise 0)) 0 1
     , pluck 220 1.5
     , filtered 3
+    , gritty 3
     , sweep 4
     ]
 

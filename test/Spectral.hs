@@ -3,6 +3,7 @@ module Spectral
   ( spectrum
   , blackman
   , windowed
+  , strayDb
   , rms
   ) where
 
@@ -27,6 +28,13 @@ blackman n = U.generate n $ \i ->
 -- спектр и меряться будет она, а не сигнал.
 windowed :: U.Vector Double -> [Double]
 windowed v = spectrum (U.zipWith (*) (blackman (U.length v)) v)
+
+-- | Худший бин вне гармоник основной частоты m, в дБ относительно неё.
+-- Частота должна попадать ровно в бин, иначе меряться будет утечка.
+strayDb :: Int -> [Double] -> Double
+strayDb m mags = 20 * logBase 10 (worst / (mags !! m))
+  where
+    worst = maximum [v | (k, v) <- zip [0 :: Int ..] mags, k `mod` m /= 0]
 
 rms :: U.Vector Double -> Double
 rms v
