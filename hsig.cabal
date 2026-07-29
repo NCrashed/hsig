@@ -62,7 +62,8 @@ library
 
 executable demo
   import:         opts
-  hs-source-dirs: tracks
+  hs-source-dirs: tracks patches
+  other-modules:  Lead
   main-is:        Demo.hs
 
   -- Файл трека это модуль Demo, а не Main, Cabal сам -main-is не подставляет.
@@ -74,7 +75,7 @@ executable demo
 test-suite hsig-test
   import:         opts
   type:           exitcode-stdio-1.0
-  hs-source-dirs: test
+  hs-source-dirs: test patches
   main-is:        Main.hs
   ghc-options:    -threaded -rtsopts -with-rtsopts=-N
   other-modules:
@@ -82,6 +83,8 @@ test-suite hsig-test
     DelaySpec
     EnvelopeSpec
     FilterSpec
+    Lead
+    LeadSpec
     NonlinSpec
     OscSpec
     RandomSpec

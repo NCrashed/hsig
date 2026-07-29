@@ -27,6 +27,7 @@
           fileset = pkgs.lib.fileset.unions [
             ./hsig.cabal
             ./LICENSE
+            ./patches
             ./src
             ./test
             ./tracks

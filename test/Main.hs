@@ -5,6 +5,7 @@ import CoreSpec qualified
 import DelaySpec qualified
 import EnvelopeSpec qualified
 import FilterSpec qualified
+import LeadSpec qualified
 import NonlinSpec qualified
 import OscSpec qualified
 import RandomSpec qualified
@@ -29,5 +30,6 @@ main =
       , DelaySpec.tests
       , ScoreSpec.tests
       , RenderSpec.tests
+      , LeadSpec.tests
       , WavSpec.tests
       ]

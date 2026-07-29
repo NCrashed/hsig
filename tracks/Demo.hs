@@ -3,6 +3,7 @@ module Demo (main) where
 
 import Control.Category ((>>>))
 import Data.Function ((&))
+import Lead (lead)
 import Sound.Sig
 
 env :: Env
@@ -94,24 +95,34 @@ hatInst n =
     * adsr 0.001 0.04 0 0.01 (noteDur n * 0.4)
     * constant (noteAmp n * 0.25)
 
--- | Четыре ноты баса и восьмые хэта. Каждый стем пишется на диск отдельно
--- и сводится из файлов (разд. 8).
+-- | Шестнадцать тактов по два цикла: 32 секунды при 120 ударах в минуту.
+trackSec :: Double
+trackSec = 32
+
 -- | Трапеция по краям обязательна: рендер режет по времени жёстко, и без
 -- неё последняя нота обрывается на середине релиза, то есть щелчком.
-beat :: [Stem]
-beat =
-  [ Stem "bass" (play bassInst (bar (listToPat (map noteOf [55, 55, 73.42, 55]))) * trapezoid beatSec)
-  , Stem "hat" (play hatInst (bar (fast 8 (degradeBy 0.25 (pure (noteOf 1))))) * trapezoid beatSec)
+--
+-- Лид это приёмочный патч разд. 9, бас и хэт держат ритм под ним.
+sixteenBars :: [Stem]
+sixteenBars =
+  [ Stem "bass" (play bassInst bassPat * gate)
+  , Stem "hat" (play hatInst hatPat * gate)
+  , Stem "lead" (play lead leadPat * gate * 0.5)
   ]
-
-beatSec :: Double
-beatSec = 8
+  where
+    gate = trapezoid trackSec
+    bassPat = bar (listToPat (map noteOf [55, 55, 73.42, 55]))
+    hatPat = bar (fast 8 (degradeBy 0.25 (pure (noteOf 1))))
+    -- Пауза в третьей доле, чтобы фраза дышала.
+    leadPat =
+      bar . every 4 rev $
+        fastcat [pure (noteOf 440), pure (noteOf 523.25), silence, pure (noteOf 659.25)]
 
 main :: IO ()
 main = do
   report <- writeWav env Bits16 tour track
   putStrLn (tour <> ": пик " <> show (clipPeak report))
-  beatPath <- renderTrack env beatSec "out/beat.wav" beat
-  putStrLn (beatPath <> ": ритм из паттернов, 4 такта")
+  trackPath <- renderTrack env trackSec "out/track.wav" sixteenBars
+  putStrLn (trackPath <> ": 16 тактов, лид по разд. 9")
   where
     tour = "out/demo.wav"
