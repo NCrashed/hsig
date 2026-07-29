@@ -1,0 +1,12 @@
+dist-newstyle/
+.ghc.environment.*
+*.hi
+*.o
+
+# результаты рендера
+out/
+
+# nix
+result
+result-*
+.direnv/

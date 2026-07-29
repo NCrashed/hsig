@@ -1,0 +1,73 @@
+cabal-version: 3.4
+name:          hsig
+version:       0.1.0.0
+synopsis:      Оффлайн-синтезатор и DSL для электронной музыки
+description:
+  Библиотека и DSL на чистом Haskell для оффлайнового синтеза электронной
+  музыки: трек описывается как обычный хаскелльный код и рендерится в WAV.
+  Концепт и дорожная карта: docs/DESIGN.md.
+
+license:       MIT
+license-file:  LICENSE
+copyright:     (c) 2026 Anton Gushcha
+author:        Anton Gushcha
+maintainer:    ncrashed@gmail.com
+category:      Sound
+build-type:    Simple
+tested-with:   GHC ==9.10.3
+
+flag llvm
+  description:
+    Сборка через LLVM-бэкенд (-fllvm). Требует opt/llc в PATH:
+    nix develop .#llvm
+
+  default:     False
+  manual:      True
+
+common opts
+  default-language: GHC2021
+  ghc-options:
+    -Wall -Wcompat -Widentities -Wincomplete-record-updates
+    -Wincomplete-uni-patterns -Wmissing-export-lists -Wpartial-fields
+    -Wredundant-constraints -O2 -funbox-strict-fields
+
+  if flag(llvm)
+    ghc-options: -fllvm
+
+library
+  import:          opts
+  hs-source-dirs:  src
+  exposed-modules: Sound.Sig
+  build-depends:
+    , base        >=4.18 && <5
+    , bytestring  >=0.11 && <0.13
+    , containers  >=0.6  && <0.9
+    , deepseq     >=1.4  && <1.6
+    , primitive   >=0.8  && <0.10
+    , vector      >=0.13 && <0.14
+
+executable demo
+  import:         opts
+  hs-source-dirs: tracks
+  main-is:        Demo.hs
+
+  -- Файл трека это модуль Demo, а не Main, Cabal сам -main-is не подставляет.
+  ghc-options:    -main-is Demo -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+    , base
+    , hsig
+
+test-suite hsig-test
+  import:         opts
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is:        Main.hs
+  ghc-options:    -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+    , base
+    , hsig
+    , tasty             >=1.4  && <1.6
+    , tasty-hunit       >=0.10 && <0.11
+    , tasty-quickcheck  >=0.10 && <0.12
+    , vector
+    , vector-fftw       >=0.1  && <0.2

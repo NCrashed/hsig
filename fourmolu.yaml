@@ -1,0 +1,8 @@
+# Стиль как в примерах docs/DESIGN.md: отступ 2, запятые в начале строки.
+indentation: 2
+comma-style: leading
+import-export-style: leading
+record-brace-space: true
+indent-wheres: false
+haddock-style: single-line
+newlines-between-decls: 1
