@@ -3,6 +3,7 @@ module Main (main) where
 
 import CoreSpec qualified
 import DelaySpec qualified
+import DynamicsSpec qualified
 import EnvelopeSpec qualified
 import FilterSpec qualified
 import LeadSpec qualified
@@ -28,6 +29,7 @@ main =
       , ResampleSpec.tests
       , NonlinSpec.tests
       , DelaySpec.tests
+      , DynamicsSpec.tests
       , ScoreSpec.tests
       , RenderSpec.tests
       , LeadSpec.tests

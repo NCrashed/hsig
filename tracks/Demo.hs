@@ -88,6 +88,13 @@ bassInst n =
   where
     cut = 200 + 2500 * expdecay 0.07
 
+-- | Бочка: синус с быстрым спадом по высоте.
+kickInst :: Instrument
+kickInst n =
+  sine (constant (noteFreq n) * (1 + 6 * expdecay 0.02))
+    * adsr 0.001 0.15 0 0.02 (min 0.2 (noteDur n))
+    * constant (noteAmp n)
+
 -- | Хэт: отфильтрованный шум с мгновенной атакой.
 hatInst :: Instrument
 hatInst n =
@@ -105,12 +112,19 @@ trackSec = 32
 -- Лид это приёмочный патч разд. 9, бас и хэт держат ритм под ним.
 sixteenBars :: [Stem]
 sixteenBars =
-  [ Stem "bass" (play bassInst bassPat * gate)
-  , Stem "hat" (play hatInst hatPat * gate)
-  , Stem "lead" (play lead leadPat * gate * 0.5)
+  [ Stem "kick" (kickSig * gate)
+  , Stem "bass" (duck (compress 0.25 4 0.005 0.08 (play bassInst bassPat)) * gate)
+  , Stem "hat" (duck (play hatInst hatPat) * gate)
+  , Stem "lead" (duck (compress 0.3 3 0.01 0.1 (play lead leadPat)) * gate * 0.5)
   ]
   where
-    gate = trapezoid trackSec
+    -- Общий уровень: после компрессии и сайдчейна сумма стемов упирается в
+    -- полную шкалу, а мастер-лимитера у renderTrack нет.
+    gate = trapezoid trackSec * 0.65
+    -- Бочка входит в определение четырежды, поэтому share (разд. 3).
+    kickSig = share (play kickInst kickPat)
+    duck = sidechain kickSig 0.7
+    kickPat = bar (fast 4 (pure (noteOf 55) {noteAmp = 0.8}))
     bassPat = bar (listToPat (map noteOf [55, 55, 73.42, 55]))
     hatPat = bar (fast 8 (degradeBy 0.25 (pure (noteOf 1))))
     -- Пауза в третьей доле, чтобы фраза дышала.
