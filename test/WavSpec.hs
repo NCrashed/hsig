@@ -3,7 +3,7 @@
 -- | Запись WAV: заголовок, квантование, дизер, клиппинг, детерминизм.
 module WavSpec (tests) where
 
-import Control.Exception (IOException, finally, try)
+import Control.Exception (ErrorCall, IOException, finally, try)
 import Data.Bits (shiftL, (.|.))
 import Data.ByteString qualified as BS
 import Data.Int (Int16)
@@ -22,7 +22,7 @@ import Test.Tasty
 import Test.Tasty.HUnit
 
 tests :: TestTree
-tests = testGroup "IO" [headers, roundTrip, clipping, determinism, misc]
+tests = testGroup "IO" [headers, stereo, roundTrip, reading, clipping, determinism, misc]
 
 -- Хелперы --------------------------------------------------------------
 
@@ -33,6 +33,14 @@ withWav env depth sig k = withSystemTempDirectory "hsig-test" $ \dir -> do
   report <- writeWav env depth path sig
   bytes <- BS.readFile path
   k bytes report
+
+-- | То же для стерео: чередованный поток отдаётся байтами.
+withWavStereo :: Env -> BitDepth -> Sig -> Sig -> (BS.ByteString -> IO a) -> IO a
+withWavStereo env depth left right k = withSystemTempDirectory "hsig-test" $ \dir -> do
+  let path = dir </> "t.wav"
+  _ <- writeWavStereo env depth path left right
+  bytes <- BS.readFile path
+  k bytes
 
 -- | Смещение данных одной функцией: иначе тесты квантования начнут читать
 -- мусор, если заголовок изменится.
@@ -135,6 +143,66 @@ headers =
           u32 bs 40 @?= 0
     ]
 
+-- Стерео ---------------------------------------------------------------
+
+stereo :: TestTree
+stereo =
+  testGroup
+    "стерео"
+    [ -- Поля заголовка обязаны знать про два канала: readWav их не читает, а
+      -- внешний плеер по ним и разбирает файл.
+      testCase "заголовок описывает два канала" $
+        withWavStereo slowEnv Bits16 (fromSamples (replicate 10 0.5)) (fromSamples (replicate 10 (-0.5))) $ \bs -> do
+          u16 bs 22 @?= 2
+          u32 bs 24 @?= 4
+          u32 bs 28 @?= 4 * 2 * 2
+          u16 bs 32 @?= 2 * 2
+          u32 bs 40 @?= 10 * 2 * 2
+          BS.length bs @?= 44 + 10 * 2 * 2
+    , -- Кадр это левый сэмпл, потом правый. Перестановка каналов ловится
+      -- только несимметричной парой.
+      testCase "каналы чередуются, левый первым" $
+        withWavStereo slowEnv Bits16 (fromSamples (replicate 4 0.5)) (fromSamples (replicate 4 (-0.5))) $ \bs -> do
+          let frame i = (s16 bs (at Bits16 (2 * i)), s16 bs (at Bits16 (2 * i + 1)))
+          mapM_
+            (\i -> let (l, r) = frame i in assertBool (show (i, l, r)) (l > 16000 && r < -16000))
+            [0 .. 3 :: Int]
+    , -- Обрезка по короткому каналу теряла бы хвост длинного молча, поэтому
+      -- короткий дополняется нулями: та же семантика, что у (+).
+      testCase "короткий канал дополняется нулями" $ do
+        let long = fromSamples (replicate 10 0.5)
+            short = fromSamples (replicate 3 (-0.5))
+            check bs (li, ri) = do
+              u32 bs 40 @?= 10 * 2 * 2
+              let frame i = (s16 bs (at Bits16 (2 * i)), s16 bs (at Bits16 (2 * i + 1)))
+                  side pick i = pick (frame i)
+              assertBool "хвост потерян" (all (\i -> abs (side li i) > 16000) [0 .. 9 :: Int])
+              assertBool "короткий не дополнен" (all (\i -> abs (side ri i) <= 1) [3 .. 9 :: Int])
+        withWavStereo slowEnv Bits16 long short (\bs -> check bs (fst, snd))
+        withWavStereo slowEnv Bits16 short long (\bs -> check bs (snd, fst))
+    , -- Границы блоков у каналов расходятся: при блоке в 3 сэмпла и длинах 10
+      -- и 5 выравнивание идёт по остаткам, а не по целым блокам.
+      testCase "каналы со сдвинутыми границами блоков" $
+        withWavStereo slowEnv Bits16 (fromSamples (replicate 10 0.5)) (fromSamples (replicate 5 (-0.5))) $ \bs -> do
+          u32 bs 40 @?= 10 * 2 * 2
+          let frame i = (s16 bs (at Bits16 (2 * i)), s16 bs (at Bits16 (2 * i + 1)))
+          assertBool "левый порван" (all (\i -> fst (frame i) > 16000) [0 .. 9 :: Int])
+          assertBool "правый порван" (all (\i -> snd (frame i) < -16000) [0 .. 4 :: Int])
+          assertBool "правый не дополнен" (all (\i -> abs (snd (frame i)) <= 1) [5 .. 9 :: Int])
+    , -- Дизер у каналов независимый: индексы в чередованном потоке разные.
+      -- Общий на кадр дизер выдал бы себя нулевой разностью на всех кадрах.
+      testCase "дизер у каналов независимый" $ do
+        let n = 2000
+            s = fromSamples (replicate n (0.25 / 32768))
+        withWavStereo slowEnv Bits16 s s $ \bs -> do
+          let diff = [s16 bs (at Bits16 (2 * i)) - s16 bs (at Bits16 (2 * i + 1)) | i <- [0 .. n - 1]]
+              differing = length (filter (/= 0) diff)
+          assertBool ("различных кадров " <> show differing) (differing > n `div` 4)
+          -- Дизер размахом в 1 LSB, поэтому у независимых каналов разность
+          -- доходит до 2 LSB, но не больше.
+          assertBool "разность больше 2 LSB" (all (\d -> abs d <= 2) diff)
+    ]
+
 -- Квантование ----------------------------------------------------------
 
 roundTrip :: TestTree
@@ -189,6 +257,78 @@ correlation xs ys = cov / sqrt (var xs * var ys)
     mean vs = sum vs / n
     var vs = sum [(v - mean vs) * (v - mean vs) | v <- vs] / n
     cov = sum (zipWith (\a b -> (a - mean xs) * (b - mean ys)) xs ys) / n
+
+-- Чтение ---------------------------------------------------------------
+
+-- | Пишет сигнал, портит байты файла и отдаёт результат чтения.
+readBroken :: BitDepth -> [Double] -> (BS.ByteString -> BS.ByteString) -> IO (Either IOException (Double, Int, U.Vector Double))
+readBroken depth xs damage = withSystemTempDirectory "hsig-test" $ \dir -> do
+  let path = dir </> "t.wav"
+  _ <- writeWav slowEnv depth path (fromSamples xs)
+  bs <- BS.readFile path
+  BS.writeFile path (damage bs)
+  try (readWav path)
+
+reading :: TestTree
+reading =
+  testGroup
+    "чтение"
+    [ -- 24 бита читаются только этим путём, и ошибка расширения знака была бы
+      -- видна лишь на отрицательных значениях.
+      testCase "24 бита ходят туда и обратно" $
+        withSystemTempDirectory "hsig-test" $ \dir -> do
+          let path = dir </> "t.wav"
+              xs = [0, 0.5, -0.5, -1, 0.999, -0.001]
+          _ <- writeWav slowEnv Bits24 path (fromSamples xs)
+          (r, channels, got) <- readWav path
+          r @?= 4
+          channels @?= 1
+          U.length got @?= length xs
+          assertBool (show got) $
+            and (zipWith (\a b -> abs (a - b) <= 1.5 / 8388608) xs (U.toList got))
+    , -- Стык двух проверок: нечётная длина data дополняется байтом, который в
+      -- размер не входит, и обе новые проверки обязаны это пережить.
+      testCase "24 бита с нечётной длиной data" $
+        withSystemTempDirectory "hsig-test" $ \dir -> do
+          let path = dir </> "t.wav"
+              xs = [fromIntegral i / 200 - 0.25 | i <- [0 .. 100 :: Int]]
+          _ <- writeWav slowEnv Bits24 path (fromSamples xs)
+          (_, _, got) <- readWav path
+          U.length got @?= 101
+          assertBool (show got) $
+            and (zipWith (\a b -> abs (a - b) <= 1.5 / 8388608) xs (U.toList got))
+    , testCase "16 бит ходят туда и обратно" $
+        withSystemTempDirectory "hsig-test" $ \dir -> do
+          let path = dir </> "t.wav"
+              xs = [0, 0.5, -0.5, -1, 0.999]
+          _ <- writeWav slowEnv Bits16 path (fromSamples xs)
+          (_, _, got) <- readWav path
+          assertBool (show got) $
+            and (zipWith (\a b -> abs (a - b) <= 1.5 / 32768) xs (U.toList got))
+    , -- Байты за концом файла читались бы как нули, то есть усечённый файл
+      -- отдавал бы тишину вместо ошибки.
+      testCase "усечённые данные это ошибка" $ do
+        r <- readBroken Bits16 (replicate 100 0.5) (BS.take 100)
+        assertLeft "усечённый файл прочитался" r
+    , testCase "длина данных не кратна кадру это ошибка" $ do
+        r <- readBroken Bits16 (replicate 10 0.5) (\bs -> BS.concat [BS.take 40 bs, u32le 15, BS.drop 44 bs])
+        assertLeft "нечётная длина прочиталась" r
+    , testCase "неизвестный формат это ошибка" $ do
+        r <- readBroken Bits16 [0.5] (\bs -> BS.concat [BS.take 20 bs, BS.pack [7, 0], BS.drop 22 bs])
+        assertLeft "чужой формат прочитался" r
+    , testCase "не RIFF это ошибка" $ do
+        r <- readBroken Bits16 [0.5] (\bs -> BS.concat ["JUNK", BS.drop 4 bs])
+        assertLeft "не RIFF прочитался" r
+    ]
+
+-- | 32 бита little-endian как байты.
+u32le :: Int -> BS.ByteString
+u32le v = BS.pack [fromIntegral ((v `div` (256 ^ k)) `mod` 256) | k <- [0 .. 3 :: Int]]
+
+assertLeft :: String -> Either IOException a -> Assertion
+assertLeft why r = case r of
+  Left _ -> pure ()
+  Right _ -> assertFailure why
 
 -- Клиппинг -------------------------------------------------------------
 
@@ -290,6 +430,34 @@ misc =
           let path = dir </> "out" </> "sub" </> "t.wav"
           _ <- writeWav slowEnv Bits16 path (fromSamples [0])
           doesFileExist path >>= assertBool "файл не создан"
+    , -- Заголовок правится в самом конце, поэтому обрыв записи оставлял бы на
+      -- месте пути формально валидный пустой WAV, а кэш стемов считает
+      -- существующий файл готовым и молча подмешал бы тишину.
+      testCase "падение записи не оставляет файла" $
+        withSystemTempDirectory "hsig-test" $ \dir -> do
+          let path = dir </> "t.wav"
+          r <-
+            try (writeWav slowEnv Bits16 path (fromSamples (0.1 : error "обрыв")))
+              :: IO (Either ErrorCall ClipReport)
+          case r of
+            Left _ -> pure ()
+            Right _ -> assertFailure "ожидали ошибку"
+          doesFileExist path >>= assertBool "остался пустой файл" . not
+          doesFileExist (path <> ".tmp") >>= assertBool "остался временный файл" . not
+    , -- Вторая половина того же контракта: неудачная перезапись не должна
+      -- портить уже лежащий файл.
+      testCase "падение записи не портит прежний файл" $
+        withSystemTempDirectory "hsig-test" $ \dir -> do
+          let path = dir </> "t.wav"
+          _ <- writeWav slowEnv Bits16 path (fromSamples [0.5, 0.25])
+          before <- BS.readFile path
+          r <-
+            try (writeWav slowEnv Bits16 path (fromSamples (0.1 : error "обрыв")))
+              :: IO (Either ErrorCall ClipReport)
+          case r of
+            Left _ -> pure ()
+            Right _ -> assertFailure "ожидали ошибку"
+          BS.readFile path >>= (@?= before)
     , testCase "нулевая частота дискретизации это ошибка" $
         withSystemTempDirectory "hsig-test" $ \dir -> do
           r <-

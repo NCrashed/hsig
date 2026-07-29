@@ -7,12 +7,14 @@ import DynamicsSpec qualified
 import EnvelopeSpec qualified
 import FilterSpec qualified
 import LeadSpec qualified
+import MiniSpec qualified
 import NonlinSpec qualified
 import OscSpec qualified
 import RandomSpec qualified
 import RenderSpec qualified
 import ResampleSpec qualified
 import ScoreSpec qualified
+import StereoSpec qualified
 import Test.Tasty
 import WavSpec qualified
 
@@ -31,6 +33,8 @@ main =
       , DelaySpec.tests
       , DynamicsSpec.tests
       , ScoreSpec.tests
+      , StereoSpec.tests
+      , MiniSpec.tests
       , RenderSpec.tests
       , LeadSpec.tests
       , WavSpec.tests

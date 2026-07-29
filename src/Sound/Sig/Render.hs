@@ -7,12 +7,17 @@
 -- удерживался бы целиком.
 module Sound.Sig.Render
   ( play
+  , playStereo
   , Stem (..)
+  , stemOf
   , renderStem
   , mixStems
+  , mixStemsStereo
   , renderTrack
   ) where
 
+import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, takeMVar)
+import Control.Exception (SomeException, throwIO, try)
 import Control.Monad (forM_, when)
 import Control.Monad.ST (runST)
 import Data.Maybe (fromMaybe)
@@ -23,6 +28,8 @@ import Sound.Sig.Core
 import Sound.Sig.IO
 import Sound.Sig.Random (wordAt)
 import Sound.Sig.Score
+import Sound.Sig.Stereo
+import System.Directory (doesFileExist)
 import System.FilePath (takeDirectory, (</>))
 
 -- Планировщик ---------------------------------------------------------------
@@ -43,15 +50,40 @@ play inst pat = Sig $ \env ->
           fired = filter (starts from to) (queryArc pat (Arc from to))
           parts = map (renderNote env inst rate (i * block)) fired
           buf = overlapAdd block tailBuf parts
-          (out, rest) = U.splitAt block buf
+          -- force обязателен: splitAt отдаёт срезы одного массива, и блок в
+          -- 4096 сэмплов держал бы буфер на всю длину самой долгой ноты. Для
+          -- потокового потребителя это незаметно, а share или render на таком
+          -- сигнале раздували бы память в needed/block раз.
+          out = U.force (U.take block buf)
+          rest = U.drop block buf
    in go (0 :: Int) U.empty
 
+-- | Играет паттерн стерео-инструментом.
+--
+-- Цена: нота рендерится дважды, по разу на канал. Sig отдаёт один поток
+-- (разд. 3), поэтому один проход дал бы только моно.
+playStereo :: (Note -> Stereo) -> Pattern Note -> Stereo
+playStereo inst pat =
+  Stereo (play (leftChan . inst) pat) (play (rightChan . inst) pat)
+
 -- | Событие считается запущенным, если начало его целого отрезка попало в
--- полуинтервал блока.
+-- полуинтервал блока и этот фрагмент несёт атаку.
+--
+-- Проверка атаки (в Tidal это eventHasOnset) обязательна: cat и всё, что
+-- построено на splitQueries, режет запрос по границам циклов и отдаёт одну
+-- ноту двумя фрагментами с одним и тем же целым отрезком. Без неё нота,
+-- начавшаяся перед границей цикла и тянущаяся за неё, запускалась бы дважды
+-- и звучала вдвое громче, если начало и граница попали в один блок.
 starts :: Time -> Time -> Event a -> Bool
-starts from to e = t >= from && t < to
-  where
-    t = maybe (arcStart (eventPart e)) arcStart (eventWhole e)
+starts from to e = case eventWhole e of
+  -- Как eventHasOnset в Tidal: у аналогового события целого отрезка нет,
+  -- значит нет ни атаки, ни длительности. Запускать его нельзя: длину ноты
+  -- пришлось бы брать из части, то есть из размера блока, и число нот с их
+  -- длиной начало бы зависеть от envBlock.
+  Nothing -> False
+  Just w -> t == arcStart (eventPart e) && t >= from && t < to
+    where
+      t = arcStart w
 
 -- | Потолок длины одной ноты. По разд. 7 сигнал инструмента обязан быть
 -- конечным; бесконечный вешал бы рендер молча и без объяснения, поэтому
@@ -61,7 +93,7 @@ maxNoteSec = 60
 
 -- | Смещение ноты в сэмплах относительно начала блока и её сигнал.
 renderNote :: Env -> Instrument -> Double -> Int -> Event Note -> (Int, U.Vector Double)
-renderNote env inst rate blockStart e = (round (onset * rate) - blockStart, samples)
+renderNote env inst rate blockStart e = (round (onset * rate) - blockStart, checked)
   where
     Arc ws we = fromMaybe (eventPart e) (eventWhole e)
     onset = fromRational ws
@@ -75,7 +107,7 @@ renderNote env inst rate blockStart e = (round (onset * rate) - blockStart, samp
     -- него и честная нота длиной ровно в предел была бы неотличима от
     -- бесконечной.
     rendered = render env (takeSec (maxNoteSec + 1 / rate) (inst note))
-    samples
+    checked
       | U.length rendered > limit =
           error
             ( "hsig: инструмент вернул сигнал длиннее "
@@ -102,52 +134,147 @@ overlapAdd minLen tailBuf parts = runST $ do
 
 data Stem = Stem
   { stemName :: String
+  , stemSpec :: String
+  -- ^ описание стема: по нему считается ключ кэша, см. 'renderStem'
+  , stemPan :: Double
+  -- ^ панорама в миксе: -1 слева, 0 по центру, 1 справа
   , stemSig :: Sig
   }
 
--- | Пишет стем в @dir\/<имя>-<хэш>.wav@ и отдаёт путь.
+-- | Стем по центру с пустой спецификацией.
+stemOf :: String -> String -> Sig -> Stem
+stemOf name spec sig =
+  Stem {stemName = name, stemSpec = spec, stemPan = 0, stemSig = sig}
+
+-- | Пишет стем в @dir\/<имя>-<хэш>.wav@ и отдаёт путь. Если файл с таким
+-- хэшем уже есть, рендер пропускается.
+--
+-- ВАЖНО: ключ кэша считается от имени, 'stemSpec', длины в сэмплах, частоты
+-- и 'envSeed', а не от содержимого сигнала. Сериализовать 'Sig' нечем, это
+-- функция (разд. 3), поэтому спецификацию пишет автор трека. Поправили
+-- патч, но не поправили спецификацию - получите старый звук молча.
+-- Сомневаетесь - удалите файл.
+--
+-- Спецификация обязана покрывать и то, от чего стем зависит через
+-- разделяемые сигналы: если стем качается сайдчейном от бочки, правка бочки
+-- меняет и его звук, а хэш об этом не узнает.
+--
+-- 'envBlock' в ключ намеренно не входит: от размера блока результат не
+-- зависит (это отдельно проверено тестами), и включать его значило бы
+-- перерендеривать всё при настройке блока.
 --
 -- Режет по времени жёстко: если к этому моменту нота не успела затухнуть,
 -- на конце будет щелчок. Гасить края это дело трека, библиотека не
 -- подмешивает фейд молча.
 --
 -- Стемы пишутся во float32: промежуточный носитель не должен добавлять
--- шума квантования. Хэш пока считается от имени, Env и длины; настоящий
--- ключ по содержимому стема придёт вместе с кэшем на M8 (разд. 8).
+-- шума квантования.
 renderStem :: Env -> Double -> FilePath -> Stem -> IO FilePath
 renderStem env secs dir stem = do
-  _ <- writeWav env Float32 path (takeSec secs (stemSig stem))
-  pure path
+  ready <- doesFileExist path
+  if ready
+    then pure path
+    else do
+      _ <- writeWav env Float32 path (takeSec secs (stemSig stem))
+      pure path
   where
-    path = dir </> (stemName stem <> "-" <> stemHash env secs stem <> ".wav")
+    path = stemPath env secs dir stem
 
+-- | Путь стема. Имя и спецификация вместе определяют файл, поэтому одно имя
+-- с разными спецификациями это разные файлы, а не конфликт.
+stemPath :: Env -> Double -> FilePath -> Stem -> FilePath
+stemPath env secs dir stem =
+  dir </> (stemName stem <> "-" <> stemHash env secs stem <> ".wav")
+
+-- | Компоненты сворачиваются цепочкой, а не складываются: у суммы любая
+-- компенсирующая пара правок (seed на единицу вверх, длина на сэмпл вниз)
+-- давала бы то же имя файла. Длина берётся в сэмплах, ровно как её понимает
+-- takeSec: округление до миллисекунд склеивало бы разные длины в один файл.
 stemHash :: Env -> Double -> Stem -> String
-stemHash env secs stem = pad (showHex (wordAt seed 1 `mod` 0x100000000) "")
+stemHash env secs stem = pad (showHex (foldl step 7 parts `mod` 0x100000000) "")
   where
-    seed = sum (map fromEnum (stemName stem)) + round (secs * 1000) + round (envRate env) + envSeed env
+    parts =
+      map fromEnum (stemName stem <> "\0" <> stemSpec stem)
+        <> [round (secs * envRate env), round (envRate env), envSeed env]
+    step acc x = fromIntegral (wordAt (acc + x) 1)
     pad s = replicate (8 - length s) '0' <> s
 
 -- | Складывает стемы из файлов. Читает их целиком, поэтому возвращает
 -- сигнал в IO, а не притворяется чистым через unsafePerformIO.
 mixStems :: Env -> [FilePath] -> IO Sig
 mixStems env paths = do
-  parts <- mapM readOne paths
+  parts <- mapM (readStem env) paths
   -- Складываем без нейтрального элемента: литеральный 0 бесконечен и
   -- растянул бы микс.
   pure $ case parts of
     [] -> fromSamples []
     p : ps -> foldl (+) p ps
-  where
-    readOne p = do
-      (rate, xs) <- readWav p
-      when (rate /= envRate env) $
-        ioError (userError (p <> ": частота " <> show rate <> " не совпадает с рендером"))
-      pure (fromSamples (U.toList xs))
 
--- | Рендерит стемы на диск рядом с треком, сводит их и пишет мастер.
+-- | То же с панорамой: каждый стем ставится в своё место образа.
+mixStemsStereo :: Env -> [(Double, FilePath)] -> IO Stereo
+mixStemsStereo env parts =
+  mixStereo <$> mapM (\(p, path) -> pan p <$> readStem env path) parts
+
+readStem :: Env -> FilePath -> IO Sig
+readStem env path = do
+  (rate, channels, xs) <- readWav path
+  when (rate /= envRate env) $
+    ioError (userError (path <> ": частота " <> show rate <> " не совпадает с рендером"))
+  when (channels /= 1) $
+    ioError (userError (path <> ": стем должен быть моно, каналов " <> show channels))
+  -- Режем вектор срезами, а не через список: боксированный список стоил бы
+  -- десятки байт на сэмпл поверх и без того целиком прочитанного файла.
+  -- Блоки это срезы одного массива, но он и так живёт всё время чтения.
+  pure (Sig (\e -> blocksOf (blockOf e) xs))
+  where
+    blocksOf n v
+      | U.null v = []
+      | otherwise = U.take n v : blocksOf n (U.drop n v)
+
+-- | Выполняет действия параллельно, сохраняя порядок результатов.
+--
+-- Стемы независимы, поэтому рендерятся одновременно. Внутри стема ноты
+-- считаются последовательно, и это осознанно: параллелить их стоило бы
+-- только на плотных паттернах (от десятка событий в секунду блок начинает
+-- ловить по две-три ноты), а плотное это обычно перкуссия, которая и так
+-- считается быстро. Дорогие стемы наоборот разреженные: на блок приходится
+-- не больше одной ноты, и параллелить там нечего.
+inParallel :: forall a. [IO a] -> IO [a]
+inParallel actions = do
+  boxes <- mapM start actions
+  results <- mapM takeMVar boxes
+  either throwIO pure (sequence results)
+  where
+    start act = do
+      box <- newEmptyMVar
+      _ <- forkIO (try act >>= putMVar box)
+      pure (box :: MVar (Either SomeException a))
+
+-- | Рендерит стемы на диск рядом с треком, сводит их по панораме и пишет
+-- стерео-мастер в 16 бит.
 renderTrack :: Env -> Double -> FilePath -> [Stem] -> IO FilePath
 renderTrack env secs path stems = do
-  paths <- mapM (renderStem env secs (takeDirectory path)) stems
-  mixed <- mixStems env paths
-  _ <- writeWav env Bits16 path (takeSec secs mixed)
+  -- Совпали имя и спецификация, а сигналы разные: оба стема писали бы в один
+  -- файл одновременно, и в миксе оказался бы один из них дважды. От сигнала
+  -- путь зависеть не может, поэтому ловим здесь.
+  case duplicates (map (stemPath env secs dir) stems) of
+    [] -> pure ()
+    dups ->
+      ioError . userError $
+        "hsig: в один файл пишут несколько стемов: "
+          <> unwords [stemName s | s <- stems, stemPath env secs dir s `elem` dups]
+  paths <- inParallel (map (renderStem env secs dir) stems)
+  Stereo l r <- mixStemsStereo env (zip (map stemPan stems) paths)
+  _ <- writeWavStereo env Bits16 path (takeSec secs l) (takeSec secs r)
   pure path
+  where
+    dir = takeDirectory path
+
+-- | Значения, встретившиеся больше одного раза, по одному разу каждое.
+duplicates :: [String] -> [String]
+duplicates = go []
+  where
+    go _ [] = []
+    go seen (x : xs)
+      | x `elem` xs && x `notElem` seen = x : go (x : seen) xs
+      | otherwise = go seen xs

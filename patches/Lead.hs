@@ -5,21 +5,25 @@
 -- с ним при свипе. Обратный порядок даёт жирный, но мёртвый звук.
 module Lead
   ( lead
+  , leadWide
   , unison
+  , unisonWide
+  , unisonVoices
   ) where
 
 import Control.Category ((>>>))
 import Data.Function ((&))
 import Sound.Sig
 
--- | Расстроенный стек пил.
+-- | Голоса расстроенного стека по отдельности.
 --
--- Голоса разведены по интервалу в cents в обе стороны, и у каждого свой
--- медленный дрейф: синус 0.05-0.15 Гц глубиной в цент, со своей частотой и
--- фазой. Без дрейфа стек звучит статично.
-unison :: Int -> Double -> Sig -> Sig
-unison n cents freq =
-  sum (map voice [0 .. n - 1]) * constant (1 / fromIntegral n)
+-- Разведены по интервалу в cents в обе стороны, и у каждого свой медленный
+-- дрейф: синус 0.05-0.15 Гц глубиной в цент, со своей частотой и фазой. Без
+-- дрейфа стек звучит статично.
+unisonVoices :: Int -> Double -> Sig -> [Sig]
+unisonVoices n cents freq
+  | n < 1 = error "hsig: unison требует хотя бы один голос"
+  | otherwise = map voice [0 .. n - 1]
   where
     -- Частота входит в определение n раз, поэтому share (разд. 3).
     sfreq = share freq
@@ -38,14 +42,49 @@ unison n cents freq =
     driftHz i = 0.05 + 0.1 * fromIntegral i / fromIntegral (max 1 (n - 1))
     driftPhase i = 2 * pi * 0.37 * fromIntegral i
 
+-- | Стек в моно.
+--
+-- Складываем без нейтрального элемента: литеральный 0 бесконечен и делал бы
+-- стек бесконечным даже на конечной частоте. На пути lead это ничего не
+-- меняет (там частота и так бесконечна, а ноту закрывает огибающая), но
+-- сам по себе unison обязан сохранять длину входа.
+unison :: Int -> Double -> Sig -> Sig
+unison n cents freq = case unisonVoices n cents freq of
+  [] -> error "hsig: unison требует хотя бы один голос"
+  v : vs -> foldl (+) v vs * constant (1 / fromIntegral n)
+
+-- | Стек, разведённый по панораме: крайние голоса ближе к краям образа.
+-- Именно это и даёт ширину, которой у моно-стека быть не может.
+unisonWide :: Int -> Double -> Sig -> Stereo
+unisonWide n cents freq = mixStereo (zipWith place [0 :: Int ..] voices)
+  where
+    voices = unisonVoices n cents freq
+    place i v = pan (spread i) (v * constant (1 / fromIntegral n))
+    spread i
+      | n <= 1 = 0
+      | otherwise = 0.9 * (negate 1 + 2 * fromIntegral i / fromIntegral (n - 1))
+
 -- | Лид из разд. 9.
 lead :: Instrument
-lead n = body * aEnv * constant (noteAmp n) + crushed
+lead n = voiced n (unison 7 18 (pitched n))
+
+-- | Тот же патч со разведённым по панораме стеком.
+--
+-- Цена: цепочка после стека считается для каждого канала отдельно, то есть
+-- нота рендерится дважды.
+leadWide :: Note -> Stereo
+leadWide n = bothChannels (voiced n) (unisonWide 7 18 (pitched n))
+
+-- | Частота с питч-огибающей: спад на квинту за 30 мс.
+pitched :: Note -> Sig
+pitched n = constant (noteFreq n) * (1 + 0.5 * expdecay 0.03)
+
+-- | Цепочка разд. 9 поверх готового стека плюс огибающие.
+voiced :: Note -> Fx
+voiced n stack' = body * aEnv * constant (noteAmp n) + crushed
   where
-    freq = constant (noteFreq n)
-    -- Спад на квинту за 30 мс.
-    pEnv = 1 + 0.5 * expdecay 0.03
     cut = 200 + 5200 * expdecay 0.09
+
     -- Отклонение от разд. 9: нота отпускается так, чтобы вместе с релизом
     -- уложиться ровно в свой слот. adsr добавляет релиз поверх dur, поэтому
     -- по букве разд. 9 хвост каждой ноты ложился бы на атаку следующей на
@@ -61,7 +100,7 @@ lead n = body * aEnv * constant (noteAmp n) + crushed
     -- гребёнкой в 1/(1-0.6) раз и съедал запас по громкости.
     body =
       share $
-        unison 7 18 (freq * pEnv)
+        stack'
           & oversample 8 (ladder cut 0.85 >>> cubicnl 0.9 0.15)
           & highpass 20
           & comb 0.011 0.6

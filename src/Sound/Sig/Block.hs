@@ -2,6 +2,7 @@
 -- с состоянием. Наружу из библиотеки не выставляется.
 module Sound.Sig.Block
   ( align2
+  , align2Pad
   , align3
   , sweep
   , stateful1
@@ -49,6 +50,21 @@ align2 (a : as) (b : bs) = (U.take n a, U.take n b) : align2 (keep n a as) (keep
   where
     n = min (U.length a) (U.length b)
 align2 _ _ = []
+
+-- | То же, но короткий поток дополняется нулями.
+--
+-- Для управляющего сигнала обрезка по короткому верна (так же работает
+-- (*)), а вот для двух равноправных каналов нет: там хвост длинного это
+-- звук, и терять его нельзя. Семантика совпадает с (+), то есть PadZero.
+align2Pad :: Chunks -> Chunks -> [(U.Vector Double, U.Vector Double)]
+align2Pad (a : as) (b : bs) = (U.take n a, U.take n b) : align2Pad (keep n a as) (keep n b bs)
+  where
+    n = min (U.length a) (U.length b)
+align2Pad as [] = [(a, zeros a) | a <- as]
+align2Pad [] bs = [(zeros b, b) | b <- bs]
+
+zeros :: U.Vector Double -> U.Vector Double
+zeros v = U.replicate (U.length v) 0
 
 -- | То же для трёх потоков.
 align3 :: Chunks -> Chunks -> Chunks -> [(U.Vector Double, U.Vector Double, U.Vector Double)]

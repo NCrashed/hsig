@@ -13,6 +13,7 @@ tests =
   testGroup
     "Dynamics"
     [ compressTests
+    , gainTests
     , sidechainTests
     ]
 
@@ -81,6 +82,50 @@ compressTests =
       testCase "отношение меньше единицы расширяет" $ do
         let xs = render defaultEnv (compress 0.2 0.5 0.001 0.05 (takeSec 0.5 (constant 0.5)))
         assertBool (show (settled xs)) (settled xs > 0.5)
+    ]
+
+gainTests :: TestTree
+gainTests =
+  testGroup
+    "compressGain"
+    [ -- Определяющее соотношение: компрессор это вход, умноженный на свой же
+      -- коэффициент. Побитово, иначе стерео-вариант звучал бы иначе моно.
+      testCase "compress это вход на свой коэффициент" $ do
+        let src = takeSec 0.3 (sine 220 * 0.8)
+            xs = render defaultEnv (compress 0.2 4 0.005 0.05 src)
+            ys = render defaultEnv (src * compressGain 0.2 4 0.005 0.05 src)
+        xs @?= ys
+    , testCase "ниже порога коэффициент единичный" $ do
+        let xs = render defaultEnv (compressGain 0.5 4 0.001 0.05 (takeSec 0.2 (constant 0.3)))
+        assertBool (show (U.maximum xs)) (U.all (== 1) xs)
+    , -- Порог 0.2, отношение 4, вход 1: коэффициент выходит на 0.4.
+      testCase "коэффициент идёт по отношению" $ do
+        let xs = render defaultEnv (compressGain 0.2 4 0.001 0.05 (takeSec 0.5 (constant 1)))
+        assertBool (show (settled xs)) (abs (settled xs - 0.4) < 1e-3)
+    , -- Ради чего это и заведено. Каналы намеренно не кратны друг другу:
+      -- у кратных отношение сохранил бы любой общий коэффициент, и тест
+      -- проходил бы на сломанном compressGain.
+      testCase "связанный коэффициент сохраняет баланс каналов" $ do
+        let l = takeSec 0.4 (sine 220 * 0.9)
+            r = takeSec 0.4 (sine 330 * 0.25)
+            g = compressGain 0.2 4 0.005 0.05 (l + r)
+            ratio xs ys = settled (U.map abs xs) / settled (U.map abs ys)
+            out = render defaultEnv
+            want = ratio (out l) (out r)
+            linked = ratio (out (l * g)) (out (r * g))
+            apart =
+              ratio
+                (out (compress 0.2 4 0.005 0.05 l))
+                (out (compress 0.2 4 0.005 0.05 r))
+        assertBool (show (want, linked)) (abs (linked / want - 1) < 0.02)
+        -- Раздельный давит громкий канал сильнее, и баланс уезжает.
+        assertBool (show (want, apart)) (apart / want < 0.8)
+    , -- Длина у коэффициента своя, от управляющего сигнала: короткий
+      -- управляющий обрежет вход, а не пропустит хвост.
+      testCase "длина коэффициента это длина управляющего" $ do
+        let g = compressGain 0.2 4 0.005 0.05 (takeSec 0.1 (constant 1))
+        U.length (render defaultEnv g) @?= round (0.1 * rate)
+        U.length (render defaultEnv (takeSec 0.3 (sine 220) * g)) @?= round (0.1 * rate)
     ]
 
 sidechainTests :: TestTree

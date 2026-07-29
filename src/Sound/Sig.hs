@@ -10,6 +10,7 @@ module Sound.Sig
   , module Sound.Sig.Resample
   , module Sound.Sig.Score
   , module Sound.Sig.Render
+  , module Sound.Sig.Stereo
   , module Sound.Sig.IO
   ) where
 
@@ -24,3 +25,4 @@ import Sound.Sig.Osc
 import Sound.Sig.Render
 import Sound.Sig.Resample
 import Sound.Sig.Score
+import Sound.Sig.Stereo

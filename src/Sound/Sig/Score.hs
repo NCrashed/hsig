@@ -31,17 +31,23 @@ module Sound.Sig.Score
   , rev
   , degradeBy
 
+    -- * Мини-нотация
+  , parsePat
+  , numbers
+
     -- * Ноты
   , Note (..)
   , Instrument
   , noteOf
   ) where
 
+import Data.Char (isDigit, isSpace)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 
 import Data.Maybe (fromMaybe, mapMaybe)
-import Data.Ratio (denominator, numerator)
+import Data.Ratio (denominator, numerator, (%))
+import Data.String (IsString (..))
 import Sound.Sig.Core (Sig)
 import Sound.Sig.Random (doubleAt)
 
@@ -239,6 +245,136 @@ degradeBy amount p = Pattern $ \a -> filter keep (queryArc p a)
     keep e = randomAt (fromMaybe (eventPart e) (eventWhole e)) >= amount
     randomAt (Arc s e) = doubleAt 0 (hashTime ((s + e) / 2))
     hashTime t = fromIntegral (numerator t) * 2654435761 + fromIntegral (denominator t)
+
+-- Мини-нотация --------------------------------------------------------------
+
+-- | Строка это паттерн: @"bd*4"@, @"bd ~ sn ~"@, @"[bd sn] cp"@.
+instance IsString (Pattern String) where
+  fromString = parsePat
+
+-- | Разбор мини-нотации Tidal.
+--
+-- Поддержано ядро: последовательность делит цикл, @~@ пауза, @*n@ ускорение,
+-- @\/n@ замедление, @[..]@ подгруппа в один слот, @\<..\>@ смена по циклам,
+-- запятая наложение, @?@ прореживание вдвое.
+parsePat :: String -> Pattern String
+parsePat src = case parseStack (tokenize src) of
+  (p, []) -> p
+  (_, rest) -> bad ("лишнее в конце: " <> show rest)
+
+-- | Мини-нотация с числовыми атомами.
+numbers :: String -> Pattern Double
+numbers = fmap toNum . parsePat
+  where
+    toNum w = case reads w of
+      [(v, "")] -> v
+      _ -> bad ("не число: " <> w)
+
+bad :: String -> a
+bad why = error ("hsig: мини-нотация, " <> why)
+
+data Tok
+  = TWord String
+  | TRest
+  | TOpen
+  | TClose
+  | TAngle
+  | TUnangle
+  | TComma
+  | TStar
+  | TSlash
+  | TQuest
+  deriving (Eq, Show)
+
+tokenize :: String -> [Tok]
+tokenize [] = []
+tokenize (c : cs)
+  | isSpace c = tokenize cs
+  | Just t <- lookup c punctuation = t : tokenize cs
+  | otherwise = let (w, rest) = span plain (c : cs) in TWord w : tokenize rest
+  where
+    plain ch = not (isSpace ch) && ch `notElem` map fst punctuation
+
+punctuation :: [(Char, Tok)]
+punctuation =
+  [ ('~', TRest)
+  , ('[', TOpen)
+  , (']', TClose)
+  , ('<', TAngle)
+  , ('>', TUnangle)
+  , (',', TComma)
+  , ('*', TStar)
+  , ('/', TSlash)
+  , ('?', TQuest)
+  ]
+
+-- | Слои через запятую.
+parseStack :: [Tok] -> (Pattern String, [Tok])
+parseStack ts = case parseSeq ts of
+  (p, TComma : more) -> let (q, rest) = parseStack more in (stack [p, q], rest)
+  (p, rest) -> (p, rest)
+
+-- | Последовательность делит цикл между своими элементами.
+parseSeq :: [Tok] -> (Pattern String, [Tok])
+parseSeq = go []
+  where
+    go acc ts
+      | stop ts = (done (reverse acc), ts)
+      | otherwise = let (t, rest) = parseTerm ts in go (t : acc) rest
+    stop ts = case ts of
+      [] -> True
+      TClose : _ -> True
+      TUnangle : _ -> True
+      TComma : _ -> True
+      _ -> False
+    done ps = case ps of
+      [] -> silence
+      [p] -> p
+      _ -> fastcat ps
+
+-- | Элемент с модификаторами.
+parseTerm :: [Tok] -> (Pattern String, [Tok])
+parseTerm ts = mods (parseAtom ts)
+  where
+    mods (p, TStar : TWord w : rest) = mods (fast (rate w) p, rest)
+    mods (p, TSlash : TWord w : rest) = mods (slow (rate w) p, rest)
+    mods (p, TQuest : rest) = mods (degradeBy 0.5 p, rest)
+    mods (_, TStar : rest) = bad ("после * нужно число: " <> show (take 1 rest))
+    mods (_, TSlash : rest) = bad ("после / нужно число: " <> show (take 1 rest))
+    mods done = done
+    rate w = fromMaybe (bad ("не число: " <> w)) (decimal w)
+
+-- | Десятичный литерал в точную дробь. Через Double он превратился бы в
+-- двоичное приближение (0.1 это не 1\/10), а всё время в паттернах
+-- рациональное именно ради точности делений.
+decimal :: String -> Maybe Time
+decimal ('-' : rest) = negate <$> decimal rest
+decimal s = case span isDigit s of
+  ("", _) -> Nothing
+  (whole, "") -> Just (toRational (readInt whole))
+  (whole, '.' : frac)
+    | not (null frac) && all isDigit frac ->
+        Just (toRational (readInt whole) + readInt frac % (10 ^ length frac))
+  _ -> Nothing
+  where
+    readInt ds = read ds :: Integer
+
+parseAtom :: [Tok] -> (Pattern String, [Tok])
+parseAtom ts = case ts of
+  TWord w : rest -> (pure w, rest)
+  TRest : rest -> (silence, rest)
+  TOpen : rest -> case parseStack rest of
+    (p, TClose : more) -> (p, more)
+    _ -> bad "не закрыта ["
+  TAngle : rest -> case angleItems [] rest of
+    (ps, TUnangle : more) -> (cat ps, more)
+    _ -> bad "не закрыт <"
+  _ -> bad ("неожидан токен: " <> show (take 1 ts))
+  where
+    angleItems acc rest = case rest of
+      TUnangle : _ -> (reverse acc, rest)
+      [] -> (reverse acc, rest)
+      _ -> let (t, more) = parseTerm rest in angleItems (t : acc) more
 
 -- Ноты ---------------------------------------------------------------------
 

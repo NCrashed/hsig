@@ -8,18 +8,21 @@ module Sound.Sig.IO
   ( BitDepth (..)
   , ClipReport (..)
   , writeWav
+  , writeWavStereo
   , readWav
   ) where
 
+import Control.Exception (IOException, catch, onException)
 import Control.Monad (when)
 import Data.Bits (shiftL, shiftR, (.&.), (.|.))
 import Data.ByteString qualified as BS
 import Data.ByteString.Builder
 import Data.Vector.Unboxed qualified as U
 import GHC.Float (castWord32ToFloat, double2Float)
+import Sound.Sig.Block (align2Pad)
 import Sound.Sig.Core
 import Sound.Sig.Random (doubleAt)
-import System.Directory (createDirectoryIfMissing)
+import System.Directory (createDirectoryIfMissing, removeFile, renameFile)
 import System.FilePath (takeDirectory)
 import System.IO
 
@@ -42,24 +45,51 @@ data ClipReport = ClipReport
 
 -- | Пишет моно-WAV, создавая недостающие каталоги.
 writeWav :: Env -> BitDepth -> FilePath -> Sig -> IO ClipReport
-writeWav env depth path sig = do
+writeWav env depth path sig = writeChannels env depth path (runSig sig env) 1
+
+-- | Пишет стерео-WAV: сэмплы каналов чередуются, как требует формат.
+--
+-- Каналы разной длины дополняются нулями до длинного, как это делает (+):
+-- обрезка по короткому теряла бы звук молча.
+writeWavStereo :: Env -> BitDepth -> FilePath -> Sig -> Sig -> IO ClipReport
+writeWavStereo env depth path left right =
+  writeChannels env depth path interleaved 2
+  where
+    interleaved = map pair (align2Pad (runSig left env) (runSig right env))
+    pair (a, b) = U.generate (2 * U.length a) $ \i ->
+      let (frame, side) = i `divMod` 2
+       in U.unsafeIndex (if side == 0 then a else b) frame
+
+-- | Общая запись: поток уже чередованных сэмплов плюс число каналов.
+--
+-- Пишем во временный файл и переименовываем в конце. Заголовок правится по
+-- факту, то есть до последнего момента размер данных в нём нулевой; обрыв
+-- посреди записи оставил бы на месте пути формально валидный пустой WAV, а
+-- кэш стемов (разд. 8) считает существующий файл готовым и молча подсунул
+-- бы в микс тишину.
+writeChannels :: Env -> BitDepth -> FilePath -> Chunks -> Int -> IO ClipReport
+writeChannels env depth path chunks channels = do
   when (rate < 1) $ ioError (userError (badRate env))
   createDirectoryIfMissing True (takeDirectory path)
-  stats <- withBinaryFile path WriteMode $ \h -> do
-    -- Длина заранее неизвестна, поэтому заголовок дописывается по факту.
-    hPutBuilder h (headerFor depth rate 0)
-    (frames, stats) <- writeAll h 0 emptyStats (runSig sig env)
-    when (odd (frames * bytesPer depth)) $ hPutBuilder h (word8 0)
-    hSeek h AbsoluteSeek 0
-    hPutBuilder h (headerFor depth rate frames)
-    pure stats
-  let report = toReport env stats
+  stats <- writeTo tmp `onException` dropQuietly tmp
+  renameFile tmp path
+  let report = toReport env channels stats
   when (clipCount report > 0) $ hPutStrLn stderr (clipMessage path report)
   when (clipBad report > 0) $ hPutStrLn stderr (badMessage path report)
   pure report
   where
     rate = round (envRate env)
     bytes = bytesPer depth
+    tmp = path <> ".tmp"
+    writeTo target = withBinaryFile target WriteMode $ \h -> do
+      -- Длина заранее неизвестна, поэтому заголовок дописывается по факту.
+      hPutBuilder h (headerFor depth channels rate 0)
+      (written, stats) <- writeAll h 0 emptyStats chunks
+      let frames = written `div` channels
+      when (odd (written * bytes)) $ hPutBuilder h (word8 0)
+      hSeek h AbsoluteSeek 0
+      hPutBuilder h (headerFor depth channels rate frames)
+      pure stats
     writeAll h !n !st cs = case cs of
       [] -> pure (n, st)
       c : rest
@@ -68,6 +98,15 @@ writeWav env depth path sig = do
             let (b, st') = encodeChunk env depth n st c
             hPutBuilder h b
             writeAll h (n + U.length c) st' rest
+
+-- | Удаляет файл, не поднимая шума. Уборка не должна бросать сама: если
+-- места на диске нет, файл вообще не откроется и удалять будет нечего, а
+-- ошибка удаления подменила бы собой настоящую причину.
+dropQuietly :: FilePath -> IO ()
+dropQuietly p = removeFile p `catch` ignore
+  where
+    ignore :: IOException -> IO ()
+    ignore _ = pure ()
 
 -- | Размеры в WAV 32-битные. Упереться в предел можно только сигналом без
 -- ограничения по длине, и тогда честнее упасть, чем дописать заголовок с
@@ -81,14 +120,15 @@ badRate env = "hsig: envRate должен быть положительным, �
 tooBig :: FilePath -> String
 tooBig path =
   path
-    <> ": данные не помещаются в 32-битные поля WAV (предел 4 ГиБ), файл оборван."
+    <> ": данные не помещаются в 32-битные поля WAV (предел 4 ГиБ), файл не записан."
     <> " Ограничьте сигнал по длине (takeSec) или пишите стемами."
 
 -- Чтение --------------------------------------------------------------------
 
--- | Читает моно-WAV: отдаёт частоту дискретизации и сэмплы. Понимает то,
--- что пишет writeWav: PCM 16 и 24 бита, IEEE float 32.
-readWav :: FilePath -> IO (Double, U.Vector Double)
+-- | Читает WAV: частота дискретизации, число каналов и сэмплы как они лежат
+-- в файле, то есть с чередованием каналов. Понимает то, что пишет этот же
+-- модуль: PCM 16 и 24 бита, IEEE float 32.
+readWav :: FilePath -> IO (Double, Int, U.Vector Double)
 readWav path = do
   bs <- BS.readFile path
   let fail' why = ioError (userError (path <> ": " <> why))
@@ -101,15 +141,29 @@ readWav path = do
           channels = u16 bs (fmtAt + 2)
           rate = u32 bs (fmtAt + 4)
           bits = u16 bs (fmtAt + 14)
-      when (channels /= 1) $ fail' "поддерживается только моно"
+      when (channels < 1) $ fail' "нет каналов"
       decode <- case (format, bits) of
         (1, 16) -> pure (\o -> fromIntegral (asInt16 (u16 bs o)) / 32768)
         (1, 24) -> pure (\o -> fromIntegral (asInt24 (u24 bs o)) / 8388608)
         (3, 32) -> pure (realToFrac . castWord32ToFloat . fromIntegral . u32 bs)
         _ -> fail' ("неизвестный формат " <> show format <> "/" <> show bits)
       let step = bits `div` 8
-          n = dataLen `div` step
-      pure (fromIntegral rate, U.generate n (\i -> decode (dataAt + i * step)))
+          frame = step * channels
+      -- Заголовку верить нельзя: за концом файла байты читались бы как нули,
+      -- то есть усечённый файл (обрыв записи, битая копия) отдавал бы
+      -- тишину вместо ошибки. А заголовок с мусорным размером просил бы
+      -- выделить гигабайты под сотню байт данных.
+      when (dataAt + dataLen > BS.length bs) $
+        fail'
+          ( "чанк data обещает "
+              <> show dataLen
+              <> " байт, а в файле их "
+              <> show (max 0 (BS.length bs - dataAt))
+          )
+      when (frame < 1 || dataLen `mod` frame /= 0) $
+        fail' ("длина data " <> show dataLen <> " не кратна кадру " <> show frame)
+      let n = dataLen `div` step
+      pure (fromIntegral rate, channels, U.generate n (\i -> decode (dataAt + i * step)))
     _ -> fail' "нет чанка fmt или data"
 
 -- | Список чанков: тег, смещение данных, длина. Нечётные дополняются
@@ -161,18 +215,18 @@ isFloat _ = False
 
 -- | RIFF/WAVE фиксированной длины: 44 байта для PCM, 58 для float (у него
 -- поле cbSize и обязательный chunk fact).
-headerFor :: BitDepth -> Int -> Int -> Builder
-headerFor depth rate frames =
+headerFor :: BitDepth -> Int -> Int -> Int -> Builder
+headerFor depth channels rate frames =
   byteString "RIFF"
     <> word32LE (fromIntegral riffSize)
     <> byteString "WAVE"
     <> byteString "fmt "
     <> word32LE (fromIntegral fmtSize)
     <> word16LE (if isFloat depth then 3 else 1)
-    <> word16LE 1
+    <> word16LE (fromIntegral channels)
     <> word32LE (fromIntegral rate)
-    <> word32LE (fromIntegral (rate * bytes))
-    <> word16LE (fromIntegral bytes)
+    <> word32LE (fromIntegral (rate * align))
+    <> word16LE (fromIntegral align)
     <> word16LE (fromIntegral (8 * bytes))
     <> (if isFloat depth then word16LE 0 else mempty)
     <> ( if isFloat depth
@@ -183,7 +237,8 @@ headerFor depth rate frames =
     <> word32LE (fromIntegral dataSize)
   where
     bytes = bytesPer depth
-    dataSize = frames * bytes
+    align = channels * bytes
+    dataSize = frames * align
     fmtSize = if isFloat depth then 18 else 16 :: Int
     factSize = if isFloat depth then 12 else 0 :: Int
     -- Нечётный chunk дополняется байтом, он входит в размер RIFF.
@@ -202,11 +257,12 @@ data Stats = Stats
 emptyStats :: Stats
 emptyStats = Stats {stCount = 0, stFirst = Nothing, stPeak = 0, stBad = 0}
 
-toReport :: Env -> Stats -> ClipReport
-toReport env st =
+-- | Индексы внутри записи чередованные, поэтому время считается по кадрам.
+toReport :: Env -> Int -> Stats -> ClipReport
+toReport env channels st =
   ClipReport
     { clipCount = stCount st
-    , clipFirst = (\i -> fromIntegral i / envRate env) <$> stFirst st
+    , clipFirst = (\i -> fromIntegral (i `div` channels) / envRate env) <$> stFirst st
     , clipPeak = stPeak st
     , clipBad = stBad st
     }
