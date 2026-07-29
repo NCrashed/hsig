@@ -1,11 +1,14 @@
--- | Демо-трек. На M0 здесь будет рендер синуса 440 Гц в WAV.
-module Demo
-  ( main
-  ) where
+-- | Демо-трек. M0: две секунды чистого тона 440 Гц.
+module Demo (main) where
 
-import Sound.Sig (version)
+import Sound.Sig
+
+tone :: Sig
+tone = takeSec 2 (0.5 * sine 440)
 
 main :: IO ()
 main = do
-  putStrLn ("hsig " ++ version ++ ": скелет собран.")
-  putStrLn "Рендер появится на M0, см. docs/DESIGN.md, разд. 11."
+  report <- writeWav defaultEnv Bits16 path tone
+  putStrLn (path <> ": пик " <> show (clipPeak report))
+  where
+    path = "out/demo.wav"

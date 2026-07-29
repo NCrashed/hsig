@@ -1,8 +1,10 @@
--- | Реэкспорт публичного API. Наполняется на M0: Core и IO.
+-- | Реэкспорт публичного API.
 module Sound.Sig
-  ( version
+  ( module Sound.Sig.Core
+  , module Sound.Sig.Osc
+  , module Sound.Sig.IO
   ) where
 
--- | Заглушка, чтобы модуль был непустым до M0.
-version :: String
-version = "0.1.0.0"
+import Sound.Sig.Core
+import Sound.Sig.IO
+import Sound.Sig.Osc
