@@ -59,6 +59,14 @@ atomTests =
       testCase "вопрос прореживает" $ do
         let n = length (q ("bd*16?" :: Pattern String) (0, 4))
         assertBool (show n) (n > 16 && n < 48)
+    , -- У каждого вопроса свой поток случайности, как в Tidal. С общим
+      -- потоком два слоя пропадали бы в такт, слой в слой.
+      testCase "у каждого вопроса свой поток" $ do
+        let times v = [arcStart (eventPart e) | e <- q ("bd*16?, sn*16?" :: Pattern String) (0, 4), eventValue e == v]
+            a = times "bd"
+            b = times "sn"
+        assertBool "оба слоя пусты" (not (null a) && not (null b))
+        assertBool (show (length a, length b)) (a /= b)
     ]
 
 groupTests :: TestTree

@@ -30,6 +30,7 @@ module Sound.Sig.Score
   , every
   , rev
   , degradeBy
+  , degradeSeeded
 
     -- * Мини-нотация
   , parsePat
@@ -240,10 +241,18 @@ rev p = splitQueries $ Pattern $ \a ->
 -- одна и та же нота то звучала бы, то нет. В Tidal это тот же принцип,
 -- там rand спрашивается на wholeOrPart события.
 degradeBy :: Double -> Pattern a -> Pattern a
-degradeBy amount p = Pattern $ \a -> filter keep (queryArc p a)
+degradeBy = degradeSeeded 0
+
+-- | То же, но со своим потоком случайности.
+--
+-- Нужен мини-нотации: у каждого @?@ поток обязан быть свой, иначе два
+-- прореживания на одной сетке решают одинаково и слои пропадают в такт. В
+-- Tidal ровно так же, там парсер выдаёт каждому @?@ отдельный seed.
+degradeSeeded :: Int -> Double -> Pattern a -> Pattern a
+degradeSeeded seed amount p = Pattern $ \a -> filter keep (queryArc p a)
   where
     keep e = randomAt (fromMaybe (eventPart e) (eventWhole e)) >= amount
-    randomAt (Arc s e) = doubleAt 0 (hashTime ((s + e) / 2))
+    randomAt (Arc s e) = doubleAt seed (hashTime ((s + e) / 2))
     hashTime t = fromIntegral (numerator t) * 2654435761 + fromIntegral (denominator t)
 
 -- Мини-нотация --------------------------------------------------------------
@@ -338,7 +347,9 @@ parseTerm ts = mods (parseAtom ts)
   where
     mods (p, TStar : TWord w : rest) = mods (fast (rate w) p, rest)
     mods (p, TSlash : TWord w : rest) = mods (slow (rate w) p, rest)
-    mods (p, TQuest : rest) = mods (degradeBy 0.5 p, rest)
+    -- Номер потока берём от позиции в строке (сколько токенов осталось):
+    -- разные ? одной строки обязаны решать независимо.
+    mods (p, TQuest : rest) = mods (degradeSeeded (length rest) 0.5 p, rest)
     mods (_, TStar : rest) = bad ("после * нужно число: " <> show (take 1 rest))
     mods (_, TSlash : rest) = bad ("после / нужно число: " <> show (take 1 rest))
     mods done = done
