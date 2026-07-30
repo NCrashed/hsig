@@ -88,14 +88,23 @@ executable book
 
   -- Примеры книги пишутся тем же языком, что трек (разд. 10 дизайна).
   default-extensions: OverloadedStrings
-  hs-source-dirs:     book
+  hs-source-dirs:     book patches
   main-is:            Main.hs
   other-modules:
     Book.Ch01
     Book.Ch02
     Book.Ch03
     Book.Ch04
+    Book.Ch05
+    Book.Ch06
+    Book.Ch07
+    Book.Ch08
+    Book.Ch10
+    Book.Ch11
+    Book.Ch12
+    Book.Ch13
     Book.Prelude
+    Lead
 
   -- -M2g: промах в примере (забытое окно) обязан падать по куче, а не
   -- выедать машину. Примеры короткие, столько им не нужно никогда.
