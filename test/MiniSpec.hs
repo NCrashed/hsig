@@ -6,6 +6,7 @@ module MiniSpec (tests) where
 import Control.Exception (ErrorCall, evaluate, try)
 import Data.List (sortOn)
 import Data.Ratio ((%))
+import Data.String (fromString)
 import Sound.Sig.Score
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -67,6 +68,14 @@ atomTests =
             b = times "sn"
         assertBool "оба слоя пусты" (not (null a) && not (null b))
         assertBool (show (length a, length b)) (a /= b)
+    , -- Номер потока это порядок вхождения, как в Tidal. Иначе подобранный
+      -- грув уезжал бы от правки соседнего слоя или лишних скобок.
+      testCase "номер потока не зависит от остального текста" $ do
+        let times src = [arcStart (eventPart e) | e <- q (fromString src :: Pattern String) (0, 4), eventValue e == "bd"]
+            plain = times "bd*16?"
+        assertBool "пусто" (not (null plain))
+        times "bd*16?, sn cp" @?= plain
+        times "[bd*16?]" @?= plain
     ]
 
 groupTests :: TestTree

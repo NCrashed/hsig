@@ -292,17 +292,31 @@ data Tok
   | TComma
   | TStar
   | TSlash
-  | TQuest
+  | -- | номер потока случайности, проставляется в 'numberQuests'
+    TQuest Int
   deriving (Eq, Show)
 
 tokenize :: String -> [Tok]
-tokenize [] = []
-tokenize (c : cs)
-  | isSpace c = tokenize cs
-  | Just t <- lookup c punctuation = t : tokenize cs
-  | otherwise = let (w, rest) = span plain (c : cs) in TWord w : tokenize rest
+tokenize = numberQuests . go
   where
+    go [] = []
+    go (c : cs)
+      | isSpace c = go cs
+      | Just t <- lookup c punctuation = t : go cs
+      | otherwise = let (w, rest) = span plain (c : cs) in TWord w : go rest
     plain ch = not (isSpace ch) && ch `notElem` map fst punctuation
+
+-- | Нумерует вопросы слева направо, как это делает парсер Tidal.
+--
+-- Номер обязан зависеть только от того, сколько вопросов стоит левее. Возьми
+-- мы позицию в потоке токенов, и правка соседнего слоя или лишние скобки
+-- перерандомизировали бы уже подобранный грув.
+numberQuests :: [Tok] -> [Tok]
+numberQuests = go 0
+  where
+    go _ [] = []
+    go !k (TQuest _ : ts) = TQuest k : go (k + 1) ts
+    go !k (t : ts) = t : go k ts
 
 punctuation :: [(Char, Tok)]
 punctuation =
@@ -314,7 +328,7 @@ punctuation =
   , (',', TComma)
   , ('*', TStar)
   , ('/', TSlash)
-  , ('?', TQuest)
+  , ('?', TQuest 0)
   ]
 
 -- | Слои через запятую.
@@ -349,7 +363,7 @@ parseTerm ts = mods (parseAtom ts)
     mods (p, TSlash : TWord w : rest) = mods (slow (rate w) p, rest)
     -- Номер потока берём от позиции в строке (сколько токенов осталось):
     -- разные ? одной строки обязаны решать независимо.
-    mods (p, TQuest : rest) = mods (degradeSeeded (length rest) 0.5 p, rest)
+    mods (p, TQuest k : rest) = mods (degradeSeeded k 0.5 p, rest)
     mods (_, TStar : rest) = bad ("после * нужно число: " <> show (take 1 rest))
     mods (_, TSlash : rest) = bad ("после / нужно число: " <> show (take 1 rest))
     mods done = done
