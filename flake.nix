@@ -90,6 +90,9 @@
               hp.cabal-fmt
               hp.ghcid
               pkgs.pkg-config
+              # Примеры книги коммитятся сжатыми: 23 МБ wav в репозитории
+              # это перебор, а mp3 весит около двух.
+              pkgs.lame
             ];
             shellHook = ''
               echo "hsig: cabal build | cabal test | cabal run demo"

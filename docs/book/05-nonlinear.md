@@ -19,8 +19,8 @@ hard :: Sig
 hard = clip 0.15 (saw 110 * 0.4) * gate 0.01 2
 ```
 
-Сравните [`05-soft.wav`](../../out/book/05-soft.wav) и
-[`05-hard.wav`](../../out/book/05-hard.wav): tanh уплотняет, но оставляет
+Сравните [`05-soft.mp3`](audio/05-soft.mp3) и
+[`05-hard.mp3`](audio/05-hard.mp3): tanh уплотняет, но оставляет
 динамику, клиппер делает звук прямоугольным и статичным. Оба нужны, но для
 разного.
 
@@ -31,7 +31,7 @@ crushed :: Sig
 crushed = decimate 4 8 (saw 110 * 0.4) * gate 0.01 2
 ```
 
-Четыре бита и каждый восьмой сэмпл: [`05-crushed.wav`](../../out/book/05-crushed.wav).
+Четыре бита и каждый восьмой сэмпл: [`05-crushed.mp3`](audio/05-crushed.mp3).
 Здесь [алиасинг](glossary.md#aliasing) это и есть эффект, поэтому `decimate` его не прячет.
 
 ## Цена: алиасинг
@@ -62,8 +62,8 @@ driven fx = fx (saw 1493 * 0.6) * 0.8 * gate 0.01 3
 | 18140 | -32 дБ | -111 дБ |
 
 Семьдесят децибел разницы. Послушайте
-[`05-drive-plain.wav`](../../out/book/05-drive-plain.wav) и
-[`05-drive-oversampled.wav`](../../out/book/05-drive-oversampled.wav): в
+[`05-drive-plain.mp3`](audio/05-drive-plain.mp3) и
+[`05-drive-oversampled.mp3`](audio/05-drive-oversampled.mp3): в
 первом слышен призвук, не имеющий отношения к ноте.
 
 У самого Найквиста разница меньше (-30 против -52 дБ на 22619 Гц): там

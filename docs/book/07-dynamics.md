@@ -10,7 +10,7 @@ flat :: Sig
 flat = kickSig + bassSig
 ```
 
-[`07-flat.wav`](../../out/book/07-flat.wav) - слышно, что удар вязнет.
+[`07-flat.mp3`](audio/07-flat.mp3) - слышно, что удар вязнет.
 
 ## Накачка
 
@@ -22,7 +22,7 @@ pumping :: Sig
 pumping = kickSig + sidechain kickSig 0.8 bassSig
 ```
 
-[`07-pumping.wav`](../../out/book/07-pumping.wav): удар пробивается, а бас
+[`07-pumping.mp3`](audio/07-pumping.mp3): удар пробивается, а бас
 дышит в такт. Глубина 0.8 означает, что в пике управляющего сигнала от баса
 остаётся 20 процентов.
 
@@ -50,8 +50,8 @@ squashed :: Sig
 squashed = compress 0.05 8 0.003 0.05 bassSig * 1.6
 ```
 
-Сравните [`07-bass-dry.wav`](../../out/book/07-bass-dry.wav) и
-[`07-bass-compressed.wav`](../../out/book/07-bass-compressed.wav). Сжатие
+Сравните [`07-bass-dry.mp3`](audio/07-bass-dry.mp3) и
+[`07-bass-compressed.mp3`](audio/07-bass-compressed.mp3). Сжатие
 съедает атаку и поднимает хвост ноты, отчего партия кажется громче и ровнее
 при том же пике. Умножение на 1.6 после компрессора это make-up gain:
 компрессор его не делает сам, потому что чужая нормировка это чужие решения

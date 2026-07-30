@@ -9,10 +9,12 @@
 они разойдутся, тесты упадут. Значит всё, что вы здесь видите, компилируется
 и звучит.
 
-Звук примеров рендерится в `out/book`:
+Звук примеров лежит рядом с главами в [audio](audio) и слушается по ссылкам
+прямо из текста. Если правите примеры, пересоберите и перекодируйте:
 
 ```
-nix develop --command cabal run book
+nix develop --command cabal run book   # out/book/*.wav
+nix develop --command tools/book-audio.sh   # docs/book/audio/*.mp3
 ```
 
 ## Часть I. Основы

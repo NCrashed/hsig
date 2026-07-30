@@ -42,10 +42,19 @@ tests =
       testCase "ссылки в глоссарий ведут в существующие якоря" $ do
         chapters <- chapterFiles
         known <- idsOf <$> readFile (bookDir </> "glossary.md")
-        used <- concat <$> mapM (fmap anchorsOf . readFile) chapters
+        used <- concat <$> mapM (fmap anchorsOf . readFile) ("README.md" : chapters)
         assertBool "главы не ссылаются на глоссарий" (not (null used))
         let missing = [a | a <- used, a `notElem` known]
         assertBool ("нет таких якорей: " <> unwords missing) (null missing)
+    , -- Звук примеров лежит в репозитории сжатым: wav это результат сборки,
+      -- его в git нет, и ссылка на него давала бы 404 читателю с GitHub.
+      -- Тест ловит и переименованный пример, и забытый tools/book-audio.sh.
+      testCase "ссылки на звук ведут в существующие файлы" $ do
+        chapters <- chapterFiles
+        used <- concat <$> mapM (fmap audioOf . readFile) chapters
+        assertBool "главы не ссылаются на звук" (not (null used))
+        missing <- filterM (fmap not . doesFileExist . (bookDir </>)) used
+        assertBool ("нет файлов: " <> unwords missing) (null missing)
     , -- Оглавление это вход в книгу: глава, на которую нет ссылки, не
       -- существует для читателя.
       testCase "оглавление и главы сходятся" $ do
@@ -77,9 +86,18 @@ targetsOf (_ : rest) = targetsOf rest
 linksOf :: String -> [String]
 linksOf src = [l | l <- targetsOf src, ".md" `isSuffixOf` l, '/' `notElem` l, l /= "README.md"]
 
--- | Якоря, на которые главы ссылаются: @glossary.md#nyquist@.
+-- | Ссылки на звук примеров: @audio\/01-tone.mp3@.
+audioOf :: String -> [String]
+audioOf src = [t | t <- targetsOf src, "audio/" `isPrefixOf` t]
+
+-- | Якоря, на которые ссылается текст: @glossary.md#nyquist@ из главы или
+-- @docs\/book\/glossary.md#nyquist@ из README, который лежит выше.
 anchorsOf :: String -> [String]
-anchorsOf = mapMaybe (stripPrefix "glossary.md#") . targetsOf
+anchorsOf = mapMaybe anchor . targetsOf
+  where
+    anchor t = case mapMaybe (`stripPrefix` t) ["glossary.md#", "docs/book/glossary.md#"] of
+      a : _ -> Just a
+      [] -> Nothing
 
 -- | Якоря, объявленные в глоссарии: @\<a id="nyquist"\>\</a\>@.
 idsOf :: String -> [String]

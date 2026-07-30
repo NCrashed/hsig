@@ -5,7 +5,9 @@
 Звук в духе разд. 1 дизайна (плотное сатурированное электро) держится на
 одном приёме: пила через резонансный лестничный фильтр с быстрой огибающей
 катоффа. `ladder cutoff resonance` это модель Муга: четыре однополюсника с
-`tanh` в петле обратной связи, решаемой итеративно.
+`tanh` в петле обратной связи, решаемой итеративно. Все фильтры библиотеки
+сделаны на [TPT/ZDF](glossary.md#tpt), поэтому срез можно крутить посэмплово
+без щелчков.
 
 ```haskell file=book/Book/Ch04.hs sym=ladderSweep
 ladderSweep :: Sig
@@ -16,7 +18,7 @@ ladderSweep = ladder cut 0.7 (saw 110 * 0.5) * gate 0.01 6
 
 Катофф едет от 120 Гц до 7.2 кГц и обратно, экспоненциально: по частоте слух
 логарифмичен, и линейный свип звучал бы как рывок в конце.
-[`out/book/04-ladder-sweep.wav`](../../out/book/04-ladder-sweep.wav).
+[`04-ladder-sweep.mp3`](audio/04-ladder-sweep.mp3).
 
 [Резонанс](glossary.md#cutoff) это второй сигнальный аргумент, 0..1:
 
@@ -27,8 +29,8 @@ resonant q = ladder cut (constant q) (saw 110 * 0.5) * gate 0.01 3
     cut = 150 * exp (line [(0, 0), (3, log 40)])
 ```
 
-Сравните [`04-resonance-low.wav`](../../out/book/04-resonance-low.wav) (0.2)
-и [`04-resonance-high.wav`](../../out/book/04-resonance-high.wav) (0.95): на
+Сравните [`04-resonance-low.mp3`](audio/04-resonance-low.mp3) (0.2)
+и [`04-resonance-high.mp3`](audio/04-resonance-high.mp3) (0.95): на
 высоком резонансе слышен свист на самой частоте среза, и он же съедает
 низ - это правда про фильтр Муга, а не артефакт.
 
@@ -49,7 +51,7 @@ svfModes = mix [delay (2 * fromIntegral i) (voice f) | (i, f) <- zip [0 :: Int .
     voice f = f 800 0.7 (noise 1 * 0.4) * gate 0.01 1.9
 ```
 
-[`out/book/04-svf-modes.wav`](../../out/book/04-svf-modes.wav): низ, полоса,
+[`04-svf-modes.mp3`](audio/04-svf-modes.mp3): низ, полоса,
 верх, вырезанная полоса. Все четыре берутся из одной пары интеграторов, и
 сумма `hp + 2R*bp + lp` точно равна входу - на этом тождестве фильтр и
 построен.
@@ -67,7 +69,7 @@ hat :: Sig
 hat = highpass 7000 (noise 2) * adsr 0.001 0.05 0 0.01 0.08 * 0.5
 ```
 
-[`out/book/04-hats.wav`](../../out/book/04-hats.wav) - восемь ударов подряд.
+[`04-hats.mp3`](audio/04-hats.mp3) - восемь ударов подряд.
 Меняя частоту среза и время спада, отсюда получают и закрытый хэт, и
 открытый, и шейкер, и снейр (последнему нужен ещё тон в районе 180 Гц).
 

@@ -30,10 +30,10 @@ sweep osc = osc (200 * exp (line [(0, 0), (5, log 20)])) * 0.2 * gate 0.01 5
 
 Послушайте подряд:
 
-- [`out/book/02-saw-naive.wav`](../../out/book/02-saw-naive.wav) - призраки,
+- [`02-saw-naive.mp3`](audio/02-saw-naive.mp3) - призраки,
   ползущие вниз навстречу основному тону, и металлический призвук ближе к
   концу;
-- [`out/book/02-saw-additive.wav`](../../out/book/02-saw-additive.wav) - тот
+- [`02-saw-additive.mp3`](audio/02-saw-additive.mp3) - тот
   же глиссандо честной пилой.
 
 ## [Аддитивный синтез](glossary.md#additive)
@@ -64,7 +64,7 @@ shapes = mix [delay (fromIntegral i) (voice o) | (i, o) <- zip [0 :: Int ..] wav
 
 `delay t` сдвигает сигнал на `t` секунд, а сумма их выстраивает подряд:
 отдельного секвенсора для этого не нужно, достаточно семантики `(+)`.
-Слушайте [`out/book/02-shapes.wav`](../../out/book/02-shapes.wav): пила,
+Слушайте [`02-shapes.mp3`](audio/02-shapes.mp3): пила,
 меандр, треугольник, узкий импульс. Треугольник заметно тише прочих - у него
 [гармоники](glossary.md#harmonics) спадают как 1/k^2, и это правда про волну, а не про реализацию.
 
@@ -80,7 +80,7 @@ pulses = pulse width 110 * 0.2 * gate 0.01 4
     width = 0.5 + 0.45 * sine 0.5
 ```
 
-Это классический [PWM](glossary.md#pwm): [`out/book/02-pwm.wav`](../../out/book/02-pwm.wav).
+Это классический [PWM](glossary.md#pwm): [`02-pwm.mp3`](audio/02-pwm.mp3).
 Тембр дышит от меандра до тонкого жужжания, потому что чётные гармоники то
 появляются, то исчезают.
 
