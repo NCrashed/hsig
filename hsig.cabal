@@ -31,6 +31,9 @@ common opts
     -Wincomplete-uni-patterns -Wmissing-export-lists -Wpartial-fields
     -Wredundant-constraints -O2 -funbox-strict-fields
 
+    -- Хаддоки попадают в интерфейсы: :doc в cabal repl работает по ним.
+    -haddock
+
   if flag(llvm)
     ghc-options: -fllvm
 

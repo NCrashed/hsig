@@ -91,9 +91,9 @@ pulseTests =
             moving = render defaultEnv (pulse w (constant 200))
             plain = render defaultEnv (takeSec (2 * fromIntegral n / rate) (square (constant 200)))
             diff = U.maximum (U.map abs (U.zipWith (-) (U.take n moving) (U.take n plain)))
-            after = U.maximum (U.map abs (U.zipWith (-) (U.drop n moving) (U.drop n plain)))
+            tail_ = U.maximum (U.map abs (U.zipWith (-) (U.drop n moving) (U.drop n plain)))
         assertBool (show diff) (diff < 1e-12)
-        assertBool (show after) (after > 0.5)
+        assertBool (show tail_) (tail_ > 0.5)
     , testCase "не зависит от размера блока" $ do
         let s = pulse (constant 0.3) (constant 300)
             big = render defaultEnv (takeSec 0.2 s)
