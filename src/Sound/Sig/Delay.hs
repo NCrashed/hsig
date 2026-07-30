@@ -14,6 +14,7 @@ import Data.Vector.Unboxed qualified as U
 import Data.Vector.Unboxed.Mutable qualified as UM
 import Sound.Sig.Block (align2)
 import Sound.Sig.Core
+import Sound.Sig.Resample (besselI0, kaiserBeta)
 
 -- | Сдвиг во времени. Сигнал именно сдвигается, поэтому и длиннее ровно на
 -- сдвиг, в отличие от гребёнки, которая длину сохраняет.
@@ -26,21 +27,32 @@ delay t (Sig g) = Sig $ \env ->
 
 -- | Задержка с изменяемым временем: время задаётся сигналом в секундах.
 --
--- Чтение дробное, интерполяция кубическая (Catmull-Rom). Округление до
--- целого сэмпла тут не годится: на плавно едущем времени оно даёт ступеньку
--- в 21 микросекунду при 48 кГц, то есть щелчки на каждом шаге. Линейной
--- интерполяции тоже мало, она заметно давит верх на дробных позициях.
+-- Чтение дробное, ядро это оконный sinc на 16 отводов с окном Кайзера, как
+-- в 'Sound.Sig.Resample'. Дешёвая кубическая интерполяция тут не годится:
+-- её ослабление зависит от дробной части (на полусэмпле -3.25 дБ на
+-- 16 кГц, на целых позициях ноль), а на движущемся источнике дробная часть
+-- пробегает целые десятки раз в секунду - на слух это дрожание верха.
+--
+-- Замер ядра, ослабление на полусэмпле против целой задержки при 48 кГц:
+-- до 12 кГц не измеряется, на 16 кГц -0.007 дБ, на 18 кГц -0.226,
+-- на 20 кГц -1.47. То есть в слышимой полосе дрожания больше нет.
+--
+-- ЦЕНА: минимальная задержка это половина ядра, 8 сэмплов (167 мкс при
+-- 48 кГц, 42 мкс при 192). Симметричному ядру нужны отсчёты по обе стороны
+-- от точки чтения, а на меньшей задержке половина из них ещё не записана.
+-- Меньшее время молча зажимается до минимума: оно задаётся сигналом и может
+-- нырять под минимум посэмплово, падать тут нечем - та же конвенция, что у
+-- зажима среза в фильтрах. Практический вывод: фленджер сквозь ноль этой
+-- задержкой не собрать, самый короткий провал садится на 3 кГц. Хорусу,
+-- доплеру, эху и межушной разнице минимум не мешает.
 --
 -- Длину сохраняет, обрезая по короткому из входа и управляющего сигнала:
 -- это модуляционная задержка, а не эхо. Нужен хвост за концом входа -
 -- добавьте padSec перед ней.
---
--- Время зажимается в @[1\/rate, maxSec]@: кубической интерполяции нужен
--- сосед с обеих сторон, поэтому нулевой задержки не бывает.
 vdelay :: Double -> Sig -> Fx
 vdelay maxSec ctrl input = Sig $ \env ->
   let rate = envRate env
-      size = max 8 (ceiling (max 0 maxSec * rate) + 4)
+      size = max (2 * fracTaps) (ceiling (max 0 maxSec * rate) + fracTaps)
       go _ [] = []
       go line ((c, x) : rest) = out : go line' rest
         where
@@ -52,20 +64,22 @@ runVdelay rate ctrl xs (Line ring0 pos0) = runST $ do
   ring <- U.thaw ring0
   out <- UM.new n
   let size = UM.length ring
-      -- Отсчёт, отстоящий на k шагов назад от только что записанного.
-      back pos k = UM.unsafeRead ring ((pos - k + 2 * size) `mod` size)
+      -- Отсчёт, отстоящий на m шагов назад от только что записанного.
+      back pos m = UM.unsafeRead ring ((pos - m + 2 * size) `mod` size)
       loop !i !pos
         | i >= n = pure pos
         | otherwise = do
             UM.unsafeWrite ring pos (U.unsafeIndex xs i)
-            let d = clampDelay size (U.unsafeIndex ctrl i * rate)
-                k = floor d :: Int
-                f = d - fromIntegral k
-            y0 <- back pos (k - 1)
-            y1 <- back pos k
-            y2 <- back pos (k + 1)
-            y3 <- back pos (k + 2)
-            UM.unsafeWrite out i (catmull f y0 y1 y2 y3)
+            let q = clampDelay size (U.unsafeIndex ctrl i * rate)
+                (k, p) = q `divMod` fracPhases
+                taps !t !acc
+                  | t >= fracTaps = pure acc
+                  | otherwise = do
+                      v <- back pos (k + t - fracLead)
+                      let h = U.unsafeIndex fracTable (p * fracTaps + t)
+                      taps (t + 1) (acc + h * v)
+            y <- taps 0 0
+            UM.unsafeWrite out i y
             loop (i + 1) (if pos + 1 >= size then 0 else pos + 1)
   posEnd <- loop 0 pos0
   ringEnd <- U.unsafeFreeze ring
@@ -74,15 +88,47 @@ runVdelay rate ctrl xs (Line ring0 pos0) = runST $ do
   where
     n = U.length xs
 
--- | Задержка в сэмплах: не меньше сэмпла и не больше буфера. NaN уходит в
--- нижний край, как и у зажимов в фильтрах.
-clampDelay :: Int -> Double -> Double
-clampDelay size d = max 1 (min (fromIntegral (size - 3)) d)
+-- | Отводов в ядре, фаз в таблице и сколько отводов лежит перед точкой
+-- чтения. Тысяча фаз это шаг задержки в тысячную сэмпла, то есть 0.02 мкс
+-- при 48 кГц - на три порядка мельче, чем различает слух.
+fracTaps, fracPhases, fracLead :: Int
+fracTaps = 16
+fracPhases = 1024
+fracLead = fracTaps `div` 2 - 1
 
--- | Catmull-Rom между y1 и y2, f это доля от y1 к y2.
-catmull :: Double -> Double -> Double -> Double -> Double -> Double
-catmull f y0 y1 y2 y3 =
-  y1 + 0.5 * f * ((y2 - y0) + f * (2 * y0 - 5 * y1 + 4 * y2 - y3 + f * (3 * (y1 - y2) + y3 - y0)))
+-- | Задержка в долях сэмпла, зажатая в окно, которое ядро может прочитать.
+-- NaN уходит в нижний край, как и у зажимов в фильтрах.
+clampDelay :: Int -> Double -> Int
+clampDelay size d
+  | isNaN d = lo
+  | otherwise = max lo (min hi (round (d * fromIntegral fracPhases)))
+  where
+    lo = (fracLead + 1) * fracPhases
+    hi = (size - fracTaps + fracLead) * fracPhases
+
+-- | Таблица ядер: на каждую фазу свой сдвинутый sinc под окном Кайзера.
+--
+-- Считается один раз на программу, 16 тысяч чисел. Сумма отводов
+-- нормирована в единицу: постоянная составляющая не должна зависеть от
+-- фазы, иначе движение задержки давало бы дрожание уровня.
+fracTable :: U.Vector Double
+fracTable = U.concat (map row [0 .. fracPhases - 1])
+  where
+    half = fromIntegral (fracTaps `div` 2)
+    beta = kaiserBeta 90
+    row p = U.map (/ U.sum ts) ts
+      where
+        f = fromIntegral p / fromIntegral fracPhases
+        ts = U.generate fracTaps (\t -> tap (fromIntegral (t - fracLead) - f))
+    tap x = sinc x * window x
+    sinc x
+      | abs x < 1e-12 = 1
+      | otherwise = sin (pi * x) / (pi * x)
+    window x
+      | abs r >= 1 = 0
+      | otherwise = besselI0 (beta * sqrt (1 - r * r)) / besselI0 beta
+      where
+        r = x / half
 
 -- | Гребёнка с обратной связью: @y[n] = x[n] + fb*y[n-d]@.
 comb :: Double -> Sig -> Fx

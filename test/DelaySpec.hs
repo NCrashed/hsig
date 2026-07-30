@@ -49,12 +49,29 @@ vdelayTests =
             err = maximum [abs (xs U.! i - sin (w * (fromIntegral i - d))) | i <- [100 .. 900]]
         -- Линейная промахнулась бы на 5e-4, кубическая на единицы 1e-7.
         assertBool (show err) (err < 1e-5)
+    , -- Ради чего ядро на 16 отводов: ослабление не должно зависеть от
+      -- дробной части, иначе на движущемся источнике это дрожание верха.
+      -- У кубической интерполяции на полусэмпле было -3.25 дБ на 16 кГц.
+      testCase "дробная позиция не давит верх" $ do
+        let level d f =
+              let s = vdelay 0.01 (constant (d / rate)) (sine (constant f))
+                  v = U.drop 4800 (render defaultEnv (takeSec 0.2 s))
+               in sqrt (U.sum (U.map (\x -> x * x) v) / fromIntegral (U.length v))
+            loss d f = 20 * logBase 10 (level d f / level 16 f)
+        mapM_
+          ( \f ->
+              mapM_
+                (\d -> assertBool (show (f, d, loss d f)) (abs (loss d f) < 0.05))
+                [16.25, 16.5, 16.75]
+          )
+          [1000, 4000, 8000, 12000, 16000]
     , -- Ради чего всё: на плавно едущем времени выход обязан быть гладким.
       -- Порог тут не запас, а граница: округление до сэмпла двигает
       -- указатель на два сэмпла за один выходной, то есть даёт ровно вдвое
       -- больший скачок, чем сам синус.
       testCase "движение времени не щёлкает" $ do
-        let sweep = constant 0.0005 + constant 0.0005 * mapSig sin (phase 0.5)
+        -- Размах держим над минимумом ядра в 8 сэмплов: 24 плюс-минус 14.
+        let sweep = constant 0.0005 + constant 0.0003 * mapSig sin (phase 0.5)
             xs = render defaultEnv (takeSec 1 (vdelay 0.002 sweep (sine 300)))
             jumps = U.maximum (U.map abs (U.zipWith (-) (U.tail xs) xs))
             -- Синус 300 Гц сам меняется не быстрее 0.04 за сэмпл.
@@ -81,11 +98,13 @@ vdelayTests =
             delayAt t =
               let xs = render defaultEnv (vdelay 0.001 (constant t) src)
                in fromIntegral (n - 50) - xs U.! (n - 50)
-        assertBool (show (delayAt (-1))) (abs (delayAt (-1) - 1) < 1e-9)
-        assertBool (show (delayAt (0 / 0))) (abs (delayAt (0 / 0) - 1) < 1e-9)
-        -- Потолок это размер буфера, он на пару сэмплов выше maxSec.
+        -- Пол это половина ядра: симметричному sinc нужны отсчёты по обе
+        -- стороны от точки чтения.
+        assertBool (show (delayAt (-1))) (abs (delayAt (-1) - 8) < 1e-9)
+        assertBool (show (delayAt (0 / 0))) (abs (delayAt (0 / 0) - 8) < 1e-9)
+        -- Потолок это размер буфера за вычетом хвоста ядра.
         let top = delayAt 10
-        assertBool (show top) (top >= 48 && top <= 50)
+        assertBool (show top) (top >= 48 && top <= 56)
     ]
 
 rate :: Double
