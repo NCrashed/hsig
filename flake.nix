@@ -19,7 +19,11 @@
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f (import nixpkgs { inherit system; }));
 
       # В стор попадает только то, от чего действительно зависит сборка.
-      # docs/, out/ и dist-newstyle/ не должны инвалидировать кэш.
+      # out/ и dist-newstyle/ не должны инвалидировать кэш.
+      #
+      # book/, docs/book и README.md тут не ради документации: книга это
+      # исполняемый book, а тесты сверяют показанный в ней код с исходниками
+      # и ссылки со звуковыми файлами. Без них тесты в песочнице падают.
       hsigSource =
         pkgs:
         pkgs.lib.fileset.toSource {
@@ -27,6 +31,9 @@
           fileset = pkgs.lib.fileset.unions [
             ./hsig.cabal
             ./LICENSE
+            ./README.md
+            ./book
+            ./docs/book
             ./patches
             ./src
             ./test

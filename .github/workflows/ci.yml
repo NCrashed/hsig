@@ -1,0 +1,72 @@
+# Сборка, тесты, линт и рендер. Всё через flake, поэтому локально то же самое
+# воспроизводится одной командой: nix flake check.
+#
+# Всё сделано одним заданием намеренно: у каждого задания свой раннер и свой
+# пустой стор, а закрытие GHC весит гигабайты. Один прогон дешевле трёх
+# параллельных, пока проект небольшой.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Новый пуш в ту же ветку отменяет предыдущий прогон: смысла добивать
+# устаревший нет.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: сборка, тесты, линт, рендер
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      # Собирает библиотеку и исполняемые, прогоняет tasty в песочнице.
+      # Тесты сверяют и код книги с исходниками, поэтому book/, docs/book и
+      # README.md входят в исходники флейка.
+      - name: nix flake check
+        run: nix flake check -L
+
+      - name: hlint
+        run: nix develop --command hlint src test tracks patches book
+
+      - name: форматирование Haskell
+        run: nix develop --command fourmolu --mode check src test tracks patches book
+
+      - name: форматирование Nix
+        run: nix fmt -- --check flake.nix
+
+      # Сквозная проверка: трек должен не просто собираться, а рендериться.
+      # Здесь работают стемы, кэш, параллельный рендер и мастер-обработка,
+      # то есть весь путь до файла.
+      - name: рендер демо-трека
+        run: nix run .#demo
+
+      - name: проверка результата
+        run: |
+          test -f out/track.wav
+          # 32 секунды стерео в 16 бит это около 6 МБ; пустой или обрезанный
+          # файл поймается тут, а не ушами.
+          size=$(stat -c%s out/track.wav)
+          echo "out/track.wav: $size байт"
+          test "$size" -gt 6000000
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: track
+          path: out/track.wav
+          retention-days: 14

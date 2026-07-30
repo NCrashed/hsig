@@ -1,5 +1,7 @@
 # hsig
 
+[![CI](https://github.com/NCrashed/hsig/actions/workflows/ci.yml/badge.svg)](https://github.com/NCrashed/hsig/actions/workflows/ci.yml)
+
 Оффлайн-синтезатор и DSL для электронной музыки на чистом Haskell. Трек это
 обычный хаскелльный код, результат это WAV.
 
@@ -45,7 +47,7 @@
 остальное приедет само.
 
 ```
-git clone <адрес репозитория> hsig
+git clone https://github.com/NCrashed/hsig
 cd hsig
 nix develop            # шелл с GHC 9.10, cabal, HLS, hlint, fourmolu
 cabal build all
@@ -124,6 +126,7 @@ cabal test                       # tasty, включая проверку при
 hlint src test tracks patches book
 fourmolu -i src test tracks patches book
 nix develop .#llvm               # шелл с LLVM, если нужен -fllvm
+nix flake check                  # то же, что гоняет CI: сборка и тесты
 ```
 
 Тесты не только проверяют код, но и сверяют каждый показанный в книге
@@ -136,6 +139,12 @@ nix develop .#llvm               # шелл с LLVM, если нужен -fllvm
 ```
 cabal run book && tools/book-audio.sh
 ```
+
+CI (`.github/workflows/ci.yml`) делает то же самое, что можно сделать руками:
+`nix flake check` (сборка и 496 тестов в песочнице), `hlint`, проверка
+форматирования Haskell и Nix, рендер демо-трека с проверкой размера файла.
+Готовый `out/track.wav` остаётся артефактом прогона, так что результат сборки
+можно послушать, ничего не собирая.
 
 ## Лицензия
 
