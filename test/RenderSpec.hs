@@ -279,6 +279,29 @@ stemTests =
           U.length ys @?= U.length xs
           assertBool "мастер не обработан" $
             U.and (U.zipWith (\a b -> abs (b - a / 2) < 2 / 32768) xs ys)
+    , -- Уборка кэша: правка спецификации меняет хэш, и без неё каталог
+      -- зарастает версиями. Удаление разрушительно, поэтому границы
+      -- закреплены: чужие имена, чужие расширения и не-хэши остаются.
+      testCase "устаревшие стемы убираются, чужие файлы нет" $
+        withSystemTempDirectory "hsig-test" $ \dir -> do
+          let mix = dir </> "mix.wav"
+              track spec = [stemOf "one" spec (constant 0.1)]
+              -- renderTrack отдаёт путь мастера, поэтому пути стемов берём
+              -- отдельно; второй вызов на уже отрендеренном просто их вернёт.
+              stemOne spec = renderStem defaultEnv 0.02 dir (stemOf "one" spec (constant 0.1))
+          old <- stemOne "v1"
+          writeFile (dir </> "one-notahash.wav") "чужое"
+          writeFile (dir </> "one-1a2b3c4d.txt") "чужое"
+          writeFile (dir </> "other-1a2b3c4d.wav") "чужое"
+          writeFile (dir </> "one.wav") "чужое"
+          _ <- renderTrack defaultEnv 0.02 mix (track "v2")
+          new <- stemOne "v2"
+          assertBool "хэш не сменился" (old /= new)
+          doesFileExist old >>= assertBool "старый стем остался" . not
+          doesFileExist new >>= assertBool "нового стема нет"
+          mapM_
+            (\f -> doesFileExist (dir </> f) >>= assertBool ("снесли " <> f))
+            ["one-notahash.wav", "one-1a2b3c4d.txt", "other-1a2b3c4d.wav", "one.wav"]
     , -- Требование разд. 12: два рендера дают побитово одинаковый файл.
       -- Стемов несколько, потому что рендерятся они параллельно.
       testCase "рендер детерминирован" $

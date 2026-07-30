@@ -30,8 +30,8 @@ import Sound.Sig.IO
 import Sound.Sig.Random (wordAt)
 import Sound.Sig.Score
 import Sound.Sig.Stereo
-import System.Directory (doesFileExist)
-import System.FilePath (takeDirectory, (</>))
+import System.Directory (doesFileExist, listDirectory, removeFile)
+import System.FilePath (takeDirectory, takeExtension, takeFileName, (</>))
 
 -- Планировщик ---------------------------------------------------------------
 
@@ -261,6 +261,13 @@ renderTrack env secs path = renderTrackWith env secs path id
 --
 -- Обработка идёт при сведении, а не в стемах, поэтому её правка не сбивает
 -- кэш и повторный прогон стоит одно чтение файлов.
+--
+-- Убирает из каталога устаревшие стемы: при правке спецификации меняется
+-- хэш, и без уборки каталог зарастает файлами прошлых версий. Удаляются
+-- только файлы вида @<имя>-<хэш>.wav@ для имён из этого трека и только с
+-- чужим хэшем; всё остальное в каталоге не трогается. Отсюда правило: два
+-- трека с общими именами стемов в одном каталоге будут вычищать кэш друг
+-- друга, разводите их по каталогам.
 renderTrackWith :: Env -> Double -> FilePath -> (Stereo -> Stereo) -> [Stem] -> IO FilePath
 renderTrackWith env secs path master stems = do
   -- Совпали имя и спецификация, а сигналы разные: оба стема писали бы в один
@@ -273,11 +280,29 @@ renderTrackWith env secs path master stems = do
         "hsig: в один файл пишут несколько стемов: "
           <> unwords [stemName s | s <- stems, stemPath env secs dir s `elem` dups]
   paths <- inParallel (map (renderStem env secs dir) stems)
+  sweepStale dir (map stemName stems) paths
   Stereo l r <- master <$> mixStemsStereo env (zip (map stemPan stems) paths)
   _ <- writeWavStereo env Bits16 path (takeSec secs l) (takeSec secs r)
   pure path
   where
     dir = takeDirectory path
+
+-- | Удаляет стемы с устаревшими хэшами. Имя должно быть ровно
+-- @<имя>-<восемь шестнадцатеричных>.wav@ для имени из трека, иначе файл не
+-- наш и остаётся на месте.
+sweepStale :: FilePath -> [String] -> [FilePath] -> IO ()
+sweepStale dir names keep = do
+  files <- listDirectory dir
+  mapM_ (removeFile . (dir </>)) (filter stale files)
+  where
+    current = map takeFileName keep
+    stale f = f `notElem` current && any (`owns` f) names
+    owns n f = case splitAt (length n + 1) f of
+      (start, rest) ->
+        start == n <> "-"
+          && length rest == 12
+          && takeExtension rest == ".wav"
+          && all (`elem` "0123456789abcdef") (take 8 rest)
 
 -- | Значения, встретившиеся больше одного раза, по одному разу каждое.
 duplicates :: [String] -> [String]

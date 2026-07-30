@@ -17,6 +17,67 @@ tests =
     , highpassTests
     , ladderLinear
     , ladderResonant
+    , svfTests
+    ]
+
+svfTests :: TestTree
+svfTests =
+  testGroup
+    "svf"
+    [ -- Тождество топологии: три выхода складываются во вход при любых
+      -- параметрах. Оно держит реализацию целиком - ошибка в любом из
+      -- коэффициентов его ломает.
+      testCase "hp + 2*R*bp + lp равно входу" $
+        mapM_
+          ( \(fc, res) ->
+              let r = max 1e-4 (1 - res)
+                  x = render defaultEnv (impulse 1)
+                  o f = render defaultEnv (f (constant fc) (constant res) (impulse 1))
+                  sum3 = U.zipWith3 (\h b l -> h + 2 * r * b + l) (o svfHigh) (o svfBand) (o svf)
+               in assertBool
+                    (show (fc, res, U.maximum (U.map abs (U.zipWith (-) sum3 x))))
+                    (U.maximum (U.map abs (U.zipWith (-) sum3 x)) < 1e-12)
+          )
+          [(200, 0), (1000, 0.5), (5000, 0.9), (100, 1)]
+    , -- Двенадцать децибел на октаву, в отличие от двадцати четырёх у ladder.
+      testCase "спад около 12 дБ на октаву" $ do
+        let mags = responseOf 1 (svf 100 0.293)
+            magAt f = mags !! binOf f
+            octave = 20 * logBase 10 (magAt 1000 / magAt 500)
+        assertBool (show octave <> " dB") (abs (octave + 12) < 1)
+    , testCase "на постоянном токе усиление единичное" $ do
+        let mags = responseOf 1 (svf 1000 0.293)
+        assertBool (show (mags !! 1)) (abs (mags !! 1 - 1) < 1e-3)
+    , -- Верхний выход зеркален нижнему, полосовой имеет пик на катоффе.
+      testCase "верхний и полосовой на своих местах" $ do
+        let hp = responseOf 1 (svfHigh 1000 0.293)
+            bp = responseOf 1 (svfBand 1000 0.293)
+            at ms f = ms !! binOf f
+        assertBool (show (at hp 100, at hp 10000)) (at hp 100 < 0.02 && at hp 10000 > 0.9)
+        assertBool (show (at bp 1000, at bp 100, at bp 10000)) $
+          at bp 1000 > 3 * at bp 100 && at bp 1000 > 3 * at bp 10000
+    , testCase "режекторный проваливается на катоффе" $ do
+        let ms = responseOf 1 (svfNotch 1000 0.293)
+            at f = ms !! binOf f
+        assertBool (show (at 1000, at 100)) (at 1000 < 0.05 * at 100)
+    , -- Резонанс поднимает пик и не разносит фильтр даже на единице.
+      testCase "резонанс поднимает пик и остаётся устойчивым" $ do
+        let peakAt res = maximum (responseOf 1 (svf 1000 (constant res)))
+            hot = render defaultEnv (svf 1000 1 (impulse 1))
+        assertBool (show (peakAt 0, peakAt 0.9)) (peakAt 0.9 > 4 * peakAt 0)
+        assertBool "разошёлся" (U.all (\v -> not (isNaN v) && abs v < 1e3) hot)
+    , testCase "вырожденные параметры не дают NaN" $ do
+        let run fc res = render defaultEnv (svf (constant fc) (constant res) (impulse 1))
+            finite = U.all (\v -> not (isNaN v) && not (isInfinite v))
+        assertBool "нулевой катофф" (finite (run 0 0.5))
+        assertBool "катофф за Найквистом" (finite (run 1e9 0.5))
+        assertBool "NaN в катоффе" (finite (run (0 / 0) 0.5))
+        assertBool "NaN в резонансе" (finite (run 1000 (0 / 0)))
+        assertBool "резонанс за диапазоном" (finite (run 1000 5))
+    , testCase "не зависит от размера блока" $ do
+        let big = render defaultEnv (svf 1000 0.7 (impulse 1))
+            small = render defaultEnv {envBlock = 64} (svf 1000 0.7 (impulse 1))
+        assertBool "расходится" (U.maximum (U.map abs (U.zipWith (-) big small)) < 1e-15)
     ]
 
 rate :: Double

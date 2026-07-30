@@ -14,6 +14,7 @@ tests =
   testGroup
     "Envelope"
     [ lineTests
+    , gateTests
     , expsegTests
     , adsrTests
     , decayTests
@@ -35,6 +36,34 @@ at sig t = render defaultEnv sig U.! round (t * rate)
 -- | Первый сэмпл, в том числе у бесконечного сигнала.
 firstSample :: Sig -> Double
 firstSample sig = U.head (render defaultEnv (takeSec (1 / rate) sig))
+
+gateTests :: TestTree
+gateTests =
+  testGroup
+    "gate"
+    [ testCase "длина ровно dur" $
+        U.length (render defaultEnv (gate 0.01 0.5)) @?= round (0.5 * rate)
+    , -- Ради чего окно и нужно: края обязаны выходить из нуля и приходить в
+      -- ноль, иначе жёсткий срез по времени даёт щелчок.
+      testCase "края в нуле, середина в единице" $ do
+        let g = gate 0.01 0.5
+            xs = render defaultEnv g
+        near "начало" 1e-12 0 (U.head xs)
+        -- Последний сэмпл лежит на сэмпл раньше конца, то есть ещё на
+        -- скосе: (1/rate)/edge от единицы.
+        near "конец" 3e-3 0 (U.last xs)
+        near "середина" 1e-12 1 (at g 0.25)
+        near "половина скоса" 1e-3 0.5 (at g 0.005)
+    , -- Скос зажимается половиной длины: на коротком окне выходит
+      -- треугольник, а не ошибка про невозрастающие точки.
+      testCase "короткое окно даёт треугольник" $ do
+        let g = gate 0.1 0.02
+        U.length (render defaultEnv g) @?= round (0.02 * rate)
+        near "вершина" 1e-9 1 (at g 0.01)
+        near "четверть" 1e-3 0.5 (at g 0.005)
+    , testCase "нулевая длина это пусто" $
+        U.length (render defaultEnv (gate 0.01 0)) @?= 0
+    ]
 
 -- Линейные брейкпоинты ---------------------------------------------------
 

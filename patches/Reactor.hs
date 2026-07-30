@@ -51,7 +51,7 @@ rod orbitHz pulseHz freq turn flash = orbit angle voice
     -- просто дорог: одно использование живёт внутри oversample, то есть в
     -- другом Env, а кэш share ключуется по Env. Разделять нечего, была бы
     -- чистая трата памяти.
-    pulse =
+    beam =
       mapSig (\x -> ((1 + cos x) / 2) ** 6) $
         phase (constant pulseHz) + constant (2 * pi * flash)
 
@@ -60,5 +60,5 @@ rod orbitHz pulseHz freq turn flash = orbit angle voice
     -- tanh в его обратной связи иначе заворачивает верх.
     voice =
       saw (constant freq)
-        & oversample 4 (ladder (constant (freq * 2) + constant (freq * 8) * pulse) 0.9)
-        & (* (pulse * constant 0.25))
+        & oversample 4 (ladder (constant (freq * 2) + constant (freq * 8) * beam) 0.9)
+        & (* (beam * constant 0.25))

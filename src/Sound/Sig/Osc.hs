@@ -7,12 +7,14 @@ module Sound.Sig.Osc
   , sine
   , saw
   , square
+  , pulse
   , tri
   , noise
   , partialGain
   ) where
 
 import Data.Vector.Unboxed qualified as U
+import Sound.Sig.Block (align2)
 import Sound.Sig.Core
 import Sound.Sig.Random (doubleAt)
 
@@ -93,7 +95,52 @@ partials nyq amp p f = go 0 1
 
 -- | Пила: (2/pi) * sum (-1)^(k+1) * sin (k*phi) / k, то есть phi/pi.
 saw :: Sig -> Sig
-saw = additive $ \k -> (if odd k then 2 else -2) / pi / fromIntegral k
+saw = additive sawAmp
+
+sawAmp :: Int -> Double
+sawAmp k = (if odd k then 2 else -2) / pi / fromIntegral k
+
+-- | Прямоугольник с управляемой шириной: width это доля периода наверху,
+-- 0.5 даёт меандр, 0 и 1 дают тишину.
+--
+-- Считается как разность двух пил, сдвинутых по фазе на ширину. У такой
+-- разности постоянная составляющая сокращается сама, поэтому модуляция
+-- ширины не даёт скачков уровня; прямая сумма гармоник импульса дала бы
+-- составляющую 2*width-1, которая ездила бы вместе с шириной. Уровни при
+-- любой ширине -1 и 1.
+--
+-- Фаза считается один раз на обе пилы, поэтому частота вычисляется тоже
+-- один раз.
+pulse :: Sig -> Sig -> Sig
+pulse width freq = Sig $ \env ->
+  let k = twoPi / envRate env
+      nyq = envRate env / 2
+      go _ [] = []
+      go !p ((ws, fs) : rest) = out : go p' rest
+        where
+          (ps, p') = phaseChunk k p fs
+          out =
+            U.izipWith
+              (\i ph f -> pulsePartials nyq ph (twoPi * U.unsafeIndex ws i) f)
+              ps
+              fs
+   in rechunk (blockOf env) (go 0 (align2 (runSig width env) (runSig freq env)))
+
+-- | Сумма гармоник разности двух пил, сдвинутых на shift радиан.
+pulsePartials :: Double -> Double -> Double -> Double -> Double
+pulsePartials nyq p shift f = go 0 1
+  where
+    f' = abs f
+    kmax
+      | f' <= 0 = 0
+      | otherwise = min maxPartials (floor (nyq / f'))
+    go !acc k
+      | k > kmax = acc
+      | otherwise = go (acc + a * gain * (sin (kf * p) - sin (kf * (p + shift)))) (k + 1)
+      where
+        kf = fromIntegral k
+        a = sawAmp k
+        gain = partialGain (kf * f' / nyq)
 
 -- | Меандр: (4/pi) * sum по нечётным sin (k*phi) / k.
 square :: Sig -> Sig

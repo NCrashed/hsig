@@ -22,17 +22,11 @@ voice wave freq dur = wave (constant freq) * adsr 0.01 0.15 0.6 0.08 dur * 0.4
 -- | Щипок: мгновенная атака и экспоненциальный спад. Хвост уже неслышим,
 -- когда трапеция закрывает ноту.
 pluck :: Double -> Double -> Sig
-pluck freq dur = saw (constant freq) * expdecay 0.15 * trapezoid dur * 0.5
-
--- | Прямоугольник с краями по 10 мс, чтобы не щёлкало на стыках.
-trapezoid :: Double -> Sig
-trapezoid dur = line [(0, 0), (edge, 1), (dur - edge, 1), (dur, 0)]
-  where
-    edge = 0.01
+pluck freq dur = saw (constant freq) * expdecay 0.15 * gate 0.01 dur * 0.5
 
 -- | Пила через лестничный фильтр: катофф едет сверху вниз, резонанс поёт.
 filtered :: Double -> Sig
-filtered dur = ladder cut 0.85 (saw 110 * 0.3) * trapezoid dur
+filtered dur = ladder cut 0.85 (saw 110 * 0.3) * gate 0.01 dur
   where
     cut = line [(0, 8000), (dur, 200)]
 
@@ -45,13 +39,13 @@ gritty dur =
     * 0.3
     & oversample 8 (ladder cut 0.8 >>> shaper 4)
     & comb 0.011 0.6
-    & (* (trapezoid dur * 0.3))
+    & (* (gate 0.01 dur * 0.3))
   where
     cut = line [(0, 6000), (dur + 0.1, 300)]
 
 -- | Свип 20 - 8000 Гц: на нём слышно, что гармоники не заворачиваются.
 sweep :: Double -> Sig
-sweep dur = saw (fromSamples freqs) * trapezoid dur * 0.4
+sweep dur = saw (fromSamples freqs) * gate 0.01 dur * 0.4
   where
     n = round (dur * rate) :: Int
     freqs = [20 + (8000 - 20) * fromIntegral i / fromIntegral n | i <- [0 .. n - 1]]
@@ -132,9 +126,9 @@ showComp (Comp t r a rl) = intercalate "/" (map show [t, r, a, rl])
 -- Лид это приёмочный патч разд. 9, бас и хэт держат ритм под ним.
 sixteenBars :: [Stem]
 sixteenBars =
-  [ stemOf "kick" kickSpec (kickSig * gate)
-  , stemOf "bass" bassSpec (duck (compWith bassComp (play bassInst bassPat)) * gate * constant bassLevel)
-  , (stemOf "hat" hatSpec (duck (play hatInst hatPat) * gate * constant hatLevel)) {stemPan = 0.35}
+  [ stemOf "kick" kickSpec (kickSig * window)
+  , stemOf "bass" bassSpec (duck (compWith bassComp (play bassInst bassPat)) * window * constant bassLevel)
+  , (stemOf "hat" hatSpec (duck (play hatInst hatPat) * window * constant hatLevel)) {stemPan = 0.35}
   , -- Лид стерео: стек унисона разведён по панораме, поэтому каналы пишутся
     -- двумя стемами и ставятся по краям. Считаются они параллельно, так что
     -- двойная цена ноты в стену времени не превращается.
@@ -159,7 +153,7 @@ sixteenBars =
     bassLevel = 2 :: Double
     hatLevel = 1.5 :: Double
     leadLevel = 1.2 :: Double
-    gate = trapezoid trackSec * constant level
+    window = gate 0.01 trackSec * constant level
 
     -- Ритм читается строкой: мини-нотация Tidal, частоты в герцах.
     kickNotes = "55*4"
@@ -236,7 +230,7 @@ sixteenBars =
     leadL = share (leftChan leadStereo)
     leadR = share (rightChan leadStereo)
     leadGain = compGainOf leadComp (leadL + leadR)
-    leadOut chan = duck (chan * leadGain) * gate * constant leadLevel
+    leadOut chan = duck (chan * leadGain) * window * constant leadLevel
 
     -- Оборот за такт, вспышки восьмыми: за оборот каждый стержень вспыхивает
     -- восемь раз, и каждый раз в новой точке круга.
@@ -250,7 +244,7 @@ sixteenBars =
     -- spread нулевой: при разносе вспышки обходят круг вперемешку, см. Reactor.
     reactorSpread = 0 :: Double
     reactorSig = reactor reactorOrbit reactorPulse reactorSpread reactorNotes
-    reactorOut chan = duck (chan reactorSig) * gate * constant reactorLevel
+    reactorOut chan = duck (chan reactorSig) * window * constant reactorLevel
     reactorSpec side =
       "реактор "
         <> side

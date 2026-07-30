@@ -18,14 +18,76 @@ tests =
     , sineTests
     , gainTests
     , waveTests
+    , pulseTests
     , aliasTests
     , noiseTests
     ]
+
+rate :: Double
+rate = envRate defaultEnv
 
 near :: String -> Double -> Double -> Double -> Assertion
 near what tol expected got =
   assertBool (what ++ ": ждали " ++ show expected ++ ", получили " ++ show got) $
     abs (expected - got) <= tol
+
+pulseTests :: TestTree
+pulseTests =
+  testGroup
+    "pulse"
+    [ -- Половинная ширина это меандр. Совпадение не побитовое: меандр берёт
+      -- только нечётные гармоники своей формулой, а разность пил получает те
+      -- же значения через сокращение чётных, и спад у Найквиста считается по
+      -- разным путям.
+      testCase "ширина 0.5 это меандр" $ do
+        let a = render defaultEnv (takeSec 0.02 (pulse 0.5 (constant 440)))
+            b = render defaultEnv (takeSec 0.02 (square (constant 440)))
+        assertBool (show (U.maximum (U.map abs (U.zipWith (-) a b)))) $
+          U.maximum (U.map abs (U.zipWith (-) a b)) < 1e-9
+    , -- Главное свойство: постоянной составляющей нет ни при какой ширине.
+      -- У прямой суммы гармоник импульса она была бы 2*width-1 и ездила бы
+      -- вместе с шириной, то есть модуляция давала бы скачки уровня.
+      testCase "постоянной составляющей нет ни при какой ширине" $
+        mapM_
+          ( \w ->
+              let xs = render defaultEnv (takeSec 0.5 (pulse (constant w) (constant 100)))
+                  mean = U.sum xs / fromIntegral (U.length xs)
+               in near ("ширина " <> show w) 2e-3 0 mean
+          )
+          [0.1, 0.25, 0.5, 0.75, 0.9]
+    , -- Скважность обязана соответствовать заказанной.
+      testCase "доля времени наверху это ширина" $
+        mapM_
+          ( \w ->
+              let xs = render defaultEnv (takeSec 0.5 (pulse (constant w) (constant 100)))
+                  up = U.length (U.filter (> 0) xs)
+               in near ("ширина " <> show w) 0.01 w (fromIntegral up / fromIntegral (U.length xs))
+          )
+          [0.25, 0.5, 0.75]
+    , testCase "нулевая и полная ширина дают тишину" $ do
+        let quiet w = U.maximum (U.map abs (render defaultEnv (takeSec 0.05 (pulse (constant w) (constant 200)))))
+        near "ноль" 1e-12 0 (quiet 0)
+        near "единица" 1e-12 0 (quiet 1)
+    , -- Ширина применяется мгновенно, без истории: на участке, где ведущий
+      -- сигнал держит 0.5, выход обязан совпасть с меандром сэмпл в сэмпл,
+      -- хотя дальше по времени ширина уезжает. Сравнивать крутизну фронтов
+      -- с неподвижным импульсом бессмысленно: у движущейся ширины фронты
+      -- законно круче и при этом остаются в полосе.
+      testCase "ширина применяется мгновенно" $ do
+        let n = 4800
+            w = fromSamples (map (\i -> if i < n then 0.5 else 0.2) [0 .. 2 * n - 1 :: Int])
+            moving = render defaultEnv (pulse w (constant 200))
+            plain = render defaultEnv (takeSec (2 * fromIntegral n / rate) (square (constant 200)))
+            diff = U.maximum (U.map abs (U.zipWith (-) (U.take n moving) (U.take n plain)))
+            after = U.maximum (U.map abs (U.zipWith (-) (U.drop n moving) (U.drop n plain)))
+        assertBool (show diff) (diff < 1e-12)
+        assertBool (show after) (after > 0.5)
+    , testCase "не зависит от размера блока" $ do
+        let s = pulse (constant 0.3) (constant 300)
+            big = render defaultEnv (takeSec 0.2 s)
+            small = render defaultEnv {envBlock = 61} (takeSec 0.2 s)
+        big @?= small
+    ]
 
 phaseTests :: TestTree
 phaseTests =

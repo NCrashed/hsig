@@ -5,7 +5,7 @@ import Data.Vector.Unboxed qualified as U
 import Sound.Sig.Core
 import Sound.Sig.Osc (noise, sine)
 import Sound.Sig.Resample
-import Spectral (spectrum, windowed)
+import Spectral (rms, spectrum, windowed)
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -16,6 +16,67 @@ tests =
     [ besselTests
     , firTests
     , oversampleTests
+    , resampleTests
+    ]
+
+resampleTests :: TestTree
+resampleTests =
+  testGroup
+    "resample"
+    [ -- Та же частота это тождество: ядро вырождается в дельту.
+      testCase "своя частота ничего не меняет" $ do
+        let src = takeSec 0.05 (sine 1000)
+            got = render defaultEnv (resample rate src)
+            want = render defaultEnv src
+        U.length got @?= U.length want
+        assertBool "разошлось" (U.maximum (U.map abs (U.zipWith (-) got want)) < 1e-12)
+    , testCase "длина меняется по отношению частот" $ do
+        let len f = U.length (render defaultEnv (resample f (takeSec 0.1 (sine 500))))
+        -- Вход считается на своей частоте, поэтому 0.1 секунды остаются
+        -- 0.1 секунды: сэмплов на выходе всегда по частоте рендера.
+        len (2 * rate) @?= round (0.1 * rate)
+        len (rate / 2) @?= round (0.1 * rate)
+    , -- Тон обязан остаться тем же тоном: время не растягивается.
+      testCase "частота тона сохраняется" $ do
+        let got = render defaultEnv (takeSec 1 (resample 96000 (sine 1000)))
+            mags = spectrum got
+            peak = snd (maximum (zip mags [0 :: Int ..]))
+        peak @?= 1000
+    , -- Критерий разд. 12: неравномерность в полосе пропускания меньше
+      -- 0.01 дБ. Сравниваем с тем же тоном, посчитанным прямо на выходной
+      -- частоте.
+      testCase "полоса пропускания ровная" $ do
+        let level s = rms (U.drop 4800 (render defaultEnv (takeSec 0.3 s)))
+            devDb f =
+              20 * logBase 10 (level (resample 96000 (sine (constant f))) / level (sine (constant f)))
+        mapM_
+          (\f -> assertBool (show (f, devDb f)) (abs (devDb f) < 0.01))
+          [100, 1000, 5000, 10000, 15000, 20000]
+    , -- Второй критерий разд. 12: затухание в полосе задерживания ниже
+      -- -120 дБ. Ради него в ядре и сжатие полосы: то, что не влезает в
+      -- новую полосу, обязано пропасть, а не завернуться.
+      testCase "при понижении нет заворота" $ do
+        let level f = rms (U.drop 4800 (render defaultEnv (takeSec 0.3 (resample 96000 (sine (constant f))))))
+            db f = 20 * logBase 10 (level f / level 1000)
+        mapM_
+          (\f -> assertBool (show (f, db f)) (db f < -120))
+          [28000, 30000, 36000, 45000]
+    , -- И обратно: подъём не должен рождать образов выше исходной полосы.
+      testCase "при повышении нет ничего сверху" $ do
+        let mags = spectrum (render defaultEnv (takeSec 1 (resample 8000 (sine 1000))))
+            peak = maximum mags
+            above = maximum [m | (k, m) <- zip [0 :: Int ..] mags, k > 4200]
+        assertBool (show (peak, above)) (above < 1e-3 * peak)
+    , testCase "постоянная составляющая сохраняется" $ do
+        let got = render defaultEnv (resample 96000 (takeSec 0.05 (constant 0.5)))
+            mid = U.slice 200 (U.length got - 400) got
+        assertBool (show (U.minimum mid, U.maximum mid)) $
+          U.all (\v -> abs (v - 0.5) < 1e-6) mid
+    , testCase "не зависит от размера блока" $ do
+        let s = resample 96000 (takeSec 0.05 (sine 1000))
+            big = render defaultEnv s
+            small = render defaultEnv {envBlock = 61} s
+        big @?= small
     ]
 
 near :: String -> Double -> Double -> Double -> Assertion
