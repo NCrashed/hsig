@@ -120,7 +120,14 @@ renderNote env inst rate blockStart e = (round (onset * rate) - blockStart, chec
       | otherwise = rendered
 
 -- | Складывает хвост от прошлых блоков и новые ноты в один буфер.
+--
+-- Когда новых нот нет, хвост отдаётся как есть, без копии. Иначе долгая нота
+-- переписывалась бы заново на каждом блоке, то есть цена росла бы квадратично
+-- по её длине: десятисекундный пэд при 48 кГц это 117 блоков по 480 тысяч
+-- сэмплов.
 overlapAdd :: Int -> U.Vector Double -> [(Int, U.Vector Double)] -> U.Vector Double
+overlapAdd minLen tailBuf parts
+  | null parts && U.length tailBuf >= minLen = tailBuf
 overlapAdd minLen tailBuf parts = runST $ do
   let needed = maximum (minLen : U.length tailBuf : [o + U.length v | (o, v) <- parts])
   buf <- UM.replicate needed 0
@@ -216,21 +223,19 @@ mixStemsStereo :: Env -> [(Double, FilePath)] -> IO Stereo
 mixStemsStereo env parts =
   mixStereo <$> mapM (\(p, path) -> pan p <$> readStem env path) parts
 
+-- | Читает стем потоком: блоки тянутся по мере надобности, поэтому память
+-- не зависит от длины трека. Ради этого стемы и заведены (разд. 8): пять
+-- минут при 384 кГц на пять стемов это гигабайты, если читать целиком.
 readStem :: Env -> FilePath -> IO Sig
 readStem env path = do
-  (rate, channels, xs) <- readWav path
+  (rate, channels, blocks) <- readWavBlocks (blockOf env) path
   when (rate /= envRate env) $
     ioError (userError (path <> ": частота " <> show rate <> " не совпадает с рендером"))
   when (channels /= 1) $
     ioError (userError (path <> ": стем должен быть моно, каналов " <> show channels))
-  -- Режем вектор срезами, а не через список: боксированный список стоил бы
-  -- десятки байт на сэмпл поверх и без того целиком прочитанного файла.
-  -- Блоки это срезы одного массива, но он и так живёт всё время чтения.
-  pure (Sig (\e -> blocksOf (blockOf e) xs))
-  where
-    blocksOf n v
-      | U.null v = []
-      | otherwise = U.take n v : blocksOf n (U.drop n v)
+  -- Блоки читаются под размер блока этого Env; если потребитель попросит
+  -- другой, rechunk переложит, не форсируя лишнего.
+  pure (Sig (\e -> rechunk (blockOf e) blocks))
 
 -- | Выполняет действия параллельно, сохраняя порядок результатов.
 --

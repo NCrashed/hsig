@@ -316,6 +316,31 @@ reading =
     , testCase "неизвестный формат это ошибка" $ do
         r <- readBroken Bits16 [0.5] (\bs -> BS.concat [BS.take 20 bs, BS.pack [7, 0], BS.drop 22 bs])
         assertLeft "чужой формат прочитался" r
+    , -- Потоковое чтение обязано давать ровно то же, что и обычное: разница
+      -- только в памяти (замер на 32 секундах: 3.7 МБ против 173).
+      testCase "поблочное чтение совпадает с обычным" $
+        withSystemTempDirectory "hsig-test" $ \dir -> do
+          let path = dir </> "t.wav"
+              xs = [sin (fromIntegral i / 7) | i <- [0 .. 999 :: Int]]
+          _ <- writeWav slowEnv Bits24 path (fromSamples xs)
+          (r, ch, whole) <- readWav path
+          (r', ch', blocks) <- readWavBlocks 128 path
+          r' @?= r
+          ch' @?= ch
+          U.concat blocks @?= whole
+          -- Все блоки по запрошенному размеру, кроме последнего.
+          map U.length (init blocks) @?= replicate 7 128
+          U.length (last blocks) @?= 104
+    , testCase "поблочное чтение проверяет заголовок так же" $ do
+        r <- readBroken Bits16 (replicate 100 0.5) (BS.take 100)
+        assertLeft "усечённый файл прочитался" r
+        bad <- withSystemTempDirectory "hsig-test" $ \dir -> do
+          let path = dir </> "t.wav"
+          _ <- writeWav slowEnv Bits16 path (fromSamples [0.5])
+          bs <- BS.readFile path
+          BS.writeFile path (BS.concat ["JUNK", BS.drop 4 bs])
+          try (readWavBlocks 64 path)
+        assertLeft "не RIFF прочитался" (fmap (\(a, b, _) -> (a, b)) bad)
     , testCase "не RIFF это ошибка" $ do
         r <- readBroken Bits16 [0.5] (\bs -> BS.concat ["JUNK", BS.drop 4 bs])
         assertLeft "не RIFF прочитался" r

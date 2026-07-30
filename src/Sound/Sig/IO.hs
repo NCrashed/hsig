@@ -10,19 +10,21 @@ module Sound.Sig.IO
   , writeWav
   , writeWavStereo
   , readWav
+  , readWavBlocks
   ) where
 
 import Control.Exception (IOException, catch, onException)
-import Control.Monad (when)
+import Control.Monad (unless, when)
 import Data.Bits (shiftL, shiftR, (.&.), (.|.))
 import Data.ByteString qualified as BS
 import Data.ByteString.Builder
+import Data.ByteString.Lazy qualified as BL
 import Data.Vector.Unboxed qualified as U
 import GHC.Float (castWord32ToFloat, double2Float)
 import Sound.Sig.Block (align2Pad)
 import Sound.Sig.Core
 import Sound.Sig.Random (doubleAt)
-import System.Directory (createDirectoryIfMissing, removeFile, renameFile)
+import System.Directory (createDirectoryIfMissing, getFileSize, removeFile, renameFile)
 import System.FilePath (takeDirectory)
 import System.IO
 
@@ -131,10 +133,63 @@ tooBig path =
 readWav :: FilePath -> IO (Double, Int, U.Vector Double)
 readWav path = do
   bs <- BS.readFile path
+  Header {hdrRate = rate, hdrChannels = channels, hdrAt = dataAt, hdrLen = dataLen, hdrStep = step} <-
+    parseHeader path bs (BS.length bs)
+  let decode = decoderFor bs (bitsOf step)
+      n = dataLen `div` step
+  pure (rate, channels, U.generate n (\i -> decode (dataAt + i * step)))
+
+-- | Читает WAV потоком: заголовок сразу, данные ленивыми блоками по n
+-- кадров. Память не зависит от длины файла, поэтому пятиминутный стем на
+-- 384 кГц читается так же, как секундный.
+--
+-- Цена ленивого чтения: дескриптор закрывается, когда поток дочитан до
+-- конца или когда до него доберётся сборщик. Оборвали чтение на середине -
+-- файл повисит открытым. Для офлайн-рендера это терпимо, для долгоживущего
+-- процесса лучше 'readWav'.
+readWavBlocks :: Int -> FilePath -> IO (Double, Int, [U.Vector Double])
+readWavBlocks n path = do
+  size <- fromIntegral <$> getFileSize path
+  lazy <- BL.readFile path
+  let front = BL.toStrict (BL.take (fromIntegral headLimit) lazy)
+  Header {hdrRate = rate, hdrChannels = channels, hdrAt = dataAt, hdrLen = dataLen, hdrStep = step} <-
+    parseHeader path front size
+  let body = BL.take (fromIntegral dataLen) (BL.drop (fromIntegral dataAt) lazy)
+      wanted = fromIntegral (max 1 n * step * channels)
+      go bs
+        | BL.null bs = []
+        | otherwise =
+            let (h, t) = BL.splitAt wanted bs
+                piece = BL.toStrict h
+                decode = decoderFor piece (bitsOf step)
+             in U.generate (BS.length piece `div` step) (\i -> decode (i * step)) : go t
+  pure (rate, channels, go body)
+
+-- | Сколько байт заголовка читаем строго. Чанк data у наших файлов начинается
+-- в первой сотне байт, но чужие пишут перед ним LIST и прочее.
+headLimit :: Int
+headLimit = 65536
+
+data Header = Header
+  { hdrRate :: !Double
+  , hdrChannels :: !Int
+  , hdrAt :: !Int
+  , hdrLen :: !Int
+  , hdrStep :: !Int
+  }
+
+bitsOf :: Int -> Int
+bitsOf step = 8 * step
+
+-- | Разбор шапки. size это длина всего файла: заголовку верить нельзя, за
+-- концом файла байты читались бы как нули, то есть усечённый файл (обрыв
+-- записи, битая копия) отдавал бы тишину вместо ошибки, а заголовок с
+-- мусорным размером просил бы выделить гигабайты под сотню байт данных.
+parseHeader :: FilePath -> BS.ByteString -> Int -> IO Header
+parseHeader path bs size = do
   let fail' why = ioError (userError (path <> ": " <> why))
   when (BS.length bs < 12) $ fail' "файл короче заголовка"
   when (tagAt bs 0 /= riffTag || tagAt bs 8 /= waveTag) $ fail' "это не RIFF/WAVE"
-  let cs = chunksFrom bs 12
   case (lookup fmtTag cs, lookup dataTag cs) of
     (Just (fmtAt, _), Just (dataAt, dataLen)) -> do
       let format = u16 bs fmtAt
@@ -142,29 +197,32 @@ readWav path = do
           rate = u32 bs (fmtAt + 4)
           bits = u16 bs (fmtAt + 14)
       when (channels < 1) $ fail' "нет каналов"
-      decode <- case (format, bits) of
-        (1, 16) -> pure (\o -> fromIntegral (asInt16 (u16 bs o)) / 32768)
-        (1, 24) -> pure (\o -> fromIntegral (asInt24 (u24 bs o)) / 8388608)
-        (3, 32) -> pure (realToFrac . castWord32ToFloat . fromIntegral . u32 bs)
-        _ -> fail' ("неизвестный формат " <> show format <> "/" <> show bits)
+      unless (known (format, bits)) $
+        fail' ("неизвестный формат " <> show format <> "/" <> show bits)
       let step = bits `div` 8
           frame = step * channels
-      -- Заголовку верить нельзя: за концом файла байты читались бы как нули,
-      -- то есть усечённый файл (обрыв записи, битая копия) отдавал бы
-      -- тишину вместо ошибки. А заголовок с мусорным размером просил бы
-      -- выделить гигабайты под сотню байт данных.
-      when (dataAt + dataLen > BS.length bs) $
+      when (dataAt + dataLen > size) $
         fail'
           ( "чанк data обещает "
               <> show dataLen
               <> " байт, а в файле их "
-              <> show (max 0 (BS.length bs - dataAt))
+              <> show (max 0 (size - dataAt))
           )
       when (frame < 1 || dataLen `mod` frame /= 0) $
         fail' ("длина data " <> show dataLen <> " не кратна кадру " <> show frame)
-      let n = dataLen `div` step
-      pure (fromIntegral rate, channels, U.generate n (\i -> decode (dataAt + i * step)))
+      pure (Header (fromIntegral rate) channels dataAt dataLen step)
     _ -> fail' "нет чанка fmt или data"
+  where
+    cs = chunksFrom bs 12
+    known fb = fb `elem` [(1, 16 :: Int), (1, 24), (3, 32)]
+
+-- | Разбор одного сэмпла по смещению. Понимает то, что пишет этот же модуль:
+-- PCM 16 и 24 бита, IEEE float 32.
+decoderFor :: BS.ByteString -> Int -> (Int -> Double)
+decoderFor bs bits = case bits of
+  16 -> \o -> fromIntegral (asInt16 (u16 bs o)) / 32768
+  24 -> \o -> fromIntegral (asInt24 (u24 bs o)) / 8388608
+  _ -> realToFrac . castWord32ToFloat . fromIntegral . u32 bs
 
 -- | Список чанков: тег, смещение данных, длина. Нечётные дополняются
 -- байтом, он в длину не входит.
