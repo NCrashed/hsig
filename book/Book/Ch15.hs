@@ -7,6 +7,7 @@ module Book.Ch15
   , plied
   , varied
   , structured
+  , notated
   ) where
 
 import Book.Ch06 (kit, lead)
@@ -41,9 +42,13 @@ varied =
 structured :: Sig
 structured = play lead (struct (euclid 5 8 (pure True)) (slow 2 "a3 c4 e4")) * gate 0.01 8
 
+notated :: Sig
+notated = play kit (stack ["bd(3,8)", "~ sn@3", "hh!3 . hh"]) * gate 0.01 8
+
 examples :: [Example]
 examples =
   [ example "15-euclid" euclidKit
+  , example "15-notation" notated
   , example "15-off" echoed
   , example "15-ply" plied
   , example "15-sometimes" varied

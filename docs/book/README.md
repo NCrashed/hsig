@@ -40,7 +40,8 @@ nix develop --command tools/book-audio.sh   # docs/book/audio/*.mp3
 14. [Три тембра](14-timbres.md) - инхармонический колокол, резонансное
     булькание и слоёный грязный бас
 15. [Комбинаторы паттернов](15-patterns.md) - евклид, эхо, ply, sometimesBy,
-    struct
+    struct, синтаксис строк
+16. [Даунтемпо](16-downtempo.md) - свинг, виниловый треск, тёплые тембры
 
 ## Справка
 

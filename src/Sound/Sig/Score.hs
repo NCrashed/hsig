@@ -50,6 +50,13 @@ module Sound.Sig.Score
   , struct
   , segment
   , appLeft
+  , euclidOff
+  , fastGap
+  , timecat
+  , within
+  , inside
+  , swingBy
+  , playWhen
 
     -- * Мини-нотация
   , parsePat
@@ -285,6 +292,76 @@ bjorklund k n
           let (paired, rest) = splitAt (length bs) as
            in go (zipWith (<>) paired bs) rest
 
+-- | Евклид с поворотом рисунка на r шагов влево.
+euclidOff :: Int -> Int -> Int -> Pattern a -> Pattern a
+euclidOff k n r = struct (listToPat (rotate (bjorklund k n)))
+  where
+    rotate xs
+      | null xs = xs
+      | otherwise = let m = r `mod` length xs in drop m xs <> take m xs
+
+-- | Ускоряет паттерн, не повторяя его: хвост цикла остаётся пустым.
+--
+-- Отличие от 'fast' принципиальное: @fast 2@ играет паттерн дважды за цикл,
+-- @fastGap 2@ - один раз в первой половине. На этом стоит укладка паттерна в
+-- долю цикла, то есть 'timecat' и полиметр.
+fastGap :: Time -> Pattern a -> Pattern a
+fastGap r p
+  | r <= 0 = silence
+  | otherwise = splitQueries (Pattern go)
+  where
+    r' = max r 1
+    go a = mapMaybe back (queryArc p inner)
+      where
+        s0 = sam (arcStart a)
+        into t = s0 + min 1 (r' * (t - s0))
+        outOf t = s0 + (t - s0) / r'
+        inner = Arc (into (arcStart a)) (into (arcStop a))
+        back e = do
+          part <- subArc (mapArc outOf (eventPart e)) a
+          pure (Event (mapArc outOf <$> eventWhole e) part (eventValue e))
+
+-- | Укладывает паттерн в отрезок цикла.
+compressArc :: Arc -> Pattern a -> Pattern a
+compressArc (Arc s e) p
+  | s < 0 || e > 1 || s >= e = silence
+  | otherwise = rotR s (fastGap (recip (e - s)) p)
+
+-- | Последовательность с весами: доля цикла у каждого пропорциональна весу.
+-- При равных весах это ровно 'fastcat'.
+timecat :: [(Time, Pattern a)] -> Pattern a
+timecat tps
+  | total <= 0 = silence
+  | otherwise = stack (go 0 tps)
+  where
+    total = sum (map fst tps)
+    go _ [] = []
+    go t ((w, p) : rest) = compressArc (Arc (t / total) ((t + w) / total)) p : go (t + w) rest
+
+-- | Оставляет события, начало которых проходит проверку.
+playWhen :: (Time -> Bool) -> Pattern a -> Pattern a
+playWhen test p = Pattern $ \a -> filter ok (queryArc p a)
+  where
+    ok e = test (arcStart (fromMaybe (eventPart e) (eventWhole e)))
+
+-- | Применяет функцию только к части цикла, остальное оставляет как есть.
+within :: (Time, Time) -> (Pattern a -> Pattern a) -> Pattern a -> Pattern a
+within (s, e) f p = stack [playWhen inside' (f p), playWhen (not . inside') p]
+  where
+    inside' t = let pos = t - sam t in pos >= s && pos < e
+
+-- | Смотрит на паттерн так, будто цикл в n раз короче: @inside 4 rev@
+-- переворачивает каждую четверть, а не весь цикл.
+inside :: Time -> (Pattern a -> Pattern a) -> Pattern a -> Pattern a
+inside n f p = fast n (f (slow n p))
+
+-- | Свинг: каждая вторая доля из n опаздывает на долю x от своего шага.
+--
+-- Ровная сетка звучит машинно, и лечится это не заменой нот, а сдвигом
+-- слабых долей. Классический джазовый свинг это @swingBy (1\/3) 4@.
+swingBy :: Time -> Time -> Pattern a -> Pattern a
+swingBy x n = inside n (within (0.5, 1) (rotR x))
+
 -- | Накладывает обработанную копию поверх исходного паттерна.
 superimpose :: (Pattern a -> Pattern a) -> Pattern a -> Pattern a
 superimpose f p = stack [p, f p]
@@ -424,11 +501,19 @@ instance IsString (Pattern String) where
 
 -- | Разбор мини-нотации Tidal.
 --
--- Поддержано ядро: последовательность делит цикл, @~@ пауза, @*n@ ускорение,
+-- Поддержано: последовательность делит цикл, @~@ пауза, @*n@ ускорение,
 -- @\/n@ замедление, @[..]@ подгруппа в один слот, @\<..\>@ смена по циклам,
 -- запятая наложение, @?@ прореживание вдвое, @?0.3@ прореживание с явной
 -- долей (точка обязательна, как в Tidal). У каждого @?@ свой поток
 -- случайности, номер по порядку вхождения.
+--
+-- Дальше вторая партия синтаксиса: @!n@ повторяет слот, одинокий @!@
+-- повторяет предыдущий, @\@n@ задаёт вес слота, @(k,n)@ и @(k,n,поворот)@
+-- это евклидов ритм, точка отдельным словом группирует (@"bd . sn sn"@ это
+-- @"bd [sn sn]"@), @{a b, c d e}%n@ полиметр (шаг берётся у первого слоя,
+-- если нет @%@), @0 .. 3@ диапазон.
+--
+-- Чего пока нет: аккорды (@c'maj@) и паттерны в аргументах евклида.
 parsePat :: String -> Pattern String
 parsePat src = case parseStack (tokenize src) of
   (p, []) -> p
@@ -455,6 +540,15 @@ data Tok
   | TComma
   | TStar
   | TSlash
+  | TBang
+  | TAt
+  | TDot
+  | TRange
+  | TLParen
+  | TRParen
+  | TBrace
+  | TUnbrace
+  | TPercent
   | -- | номер потока случайности (см. 'numberQuests') и доля прореживания
     TQuest Int Double
   deriving (Eq, Show)
@@ -467,8 +561,14 @@ tokenize = numberQuests . go
     go (c : cs)
       | isSpace c = go cs
       | Just t <- lookup c punctuation = t : go cs
-      | otherwise = let (w, rest) = span plain (c : cs) in TWord w : go rest
+      | otherwise = let (w, rest) = span plain (c : cs) in word w : go rest
     plain ch = ch /= '?' && not (isSpace ch) && ch `notElem` map fst punctuation
+
+    -- Точка отдельным словом это группировка, две точки - диапазон. Внутри
+    -- слова точка остаётся частью числа: "0.3" и "*1.5" не должны рассыпаться.
+    word "." = TDot
+    word ".." = TRange
+    word w = TWord w
 
     -- Доля разбирается здесь, а не в парсере: только тут ещё видно, прижата
     -- ли она к вопросу. Пробелы токенизатор съедает, и "bd? 0.3" в парсере
@@ -509,6 +609,13 @@ punctuation =
   , (',', TComma)
   , ('*', TStar)
   , ('/', TSlash)
+  , ('!', TBang)
+  , ('@', TAt)
+  , ('(', TLParen)
+  , (')', TRParen)
+  , ('{', TBrace)
+  , ('}', TUnbrace)
+  , ('%', TPercent)
   ]
 
 -- | Слои через запятую.
@@ -517,23 +624,72 @@ parseStack ts = case parseSeq ts of
   (p, TComma : more) -> let (q, rest) = parseStack more in (stack [p, q], rest)
   (p, rest) -> (p, rest)
 
+-- | Элемент последовательности: вес доли и сам паттерн.
+data Item = Item !Time (Pattern String)
+
 -- | Последовательность делит цикл между своими элементами.
 parseSeq :: [Tok] -> (Pattern String, [Tok])
-parseSeq = go []
+parseSeq ts = let (items, rest) = seqItems ts in (assemble items, rest)
+
+-- | Собирает элементы в паттерн. При равных весах это ровно fastcat: путь
+-- через timecat дороже и не нужен, пока никто не просил @.
+assemble :: [Item] -> Pattern String
+assemble [] = silence
+assemble [Item _ p] = p
+assemble items
+  | all (\(Item w _) -> w == 1) items = fastcat [p | Item _ p <- items]
+  | otherwise = timecat [(w, p) | Item w p <- items]
+
+-- | Элементы последовательности: сюда же попадают постфиксы уровня
+-- последовательности (@!@ и @\@@), группировка точками и диапазоны.
+seqItems :: [Tok] -> ([Item], [Tok])
+seqItems = groups [] []
   where
-    go acc ts
-      | stop ts = (done (reverse acc), ts)
-      | otherwise = let (t, rest) = parseTerm ts in go (t : acc) rest
+    -- Первый аргумент это законченные группы (в обратном порядке), второй -
+    -- текущая группа (тоже в обратном).
+    groups gs acc ts
+      | stop ts = (finish gs (reverse acc), ts)
+    groups gs acc (TDot : ts) = groups (reverse acc : gs) [] ts
+    groups gs acc (TWord a : TRange : TWord b : ts)
+      | Just x <- integer a
+      , Just y <- integer b =
+          groups gs (reverse [Item 1 (pure (show v)) | v <- range x y] <> acc) ts
+    groups gs acc ts =
+      let (p, rest) = parseTerm ts
+       in uncurry (groups gs) (postfix (Item 1 p) acc rest)
+
     stop ts = case ts of
       [] -> True
       TClose : _ -> True
       TUnangle : _ -> True
+      TUnbrace : _ -> True
       TComma : _ -> True
       _ -> False
-    done ps = case ps of
-      [] -> silence
-      [p] -> p
-      _ -> fastcat ps
+
+    -- Точки делят последовательность на группы, каждая занимает один слот:
+    -- "bd . sn sn" это то же, что "bd [sn sn]".
+    finish [] cur = cur
+    finish gs cur = [Item 1 (assemble g) | g <- reverse (cur : gs)]
+
+    -- @!n@ повторяет слот n раз, одинокий @!@ - ещё раз предыдущий,
+    -- @\@n@ меняет вес слота.
+    postfix cur acc (TBang : TWord w : ts)
+      | Just n <- integer w
+      , n > 0 =
+          (replicate (fromIntegral n) cur <> acc, ts)
+    postfix cur acc (TBang : ts) = postfix cur (cur : acc) ts
+    postfix (Item _ p) acc (TAt : TWord w : ts) = (Item (weight w) p : acc, ts)
+    postfix _ _ (TAt : ts) = bad ("после @ нужно число: " <> show (take 1 ts))
+    postfix cur acc ts = (cur : acc, ts)
+
+    weight w = fromMaybe (bad ("после @ нужно число: " <> w)) (decimal w)
+    range x y = if x <= y then [x .. y] else [x, x - 1 .. y]
+
+-- | Целое из слова.
+integer :: String -> Maybe Integer
+integer s = case reads s of
+  [(v, "")] -> Just v
+  _ -> Nothing
 
 -- | Элемент с модификаторами.
 parseTerm :: [Tok] -> (Pattern String, [Tok])
@@ -544,10 +700,21 @@ parseTerm ts = mods (parseAtom ts)
     -- Номер потока приходит готовым из numberQuests: он равен числу
     -- вопросов левее, поэтому разные ? одной строки решают независимо.
     mods (p, TQuest k amt : rest) = mods (degradeSeeded k amt p, rest)
+    -- Евклид прямо в строке: "bd(3,8)" это то же, что euclid 3 8 "bd".
+    mods (p, TLParen : rest) = let (k, n, r, more) = euclidArgs rest in mods (euclidOff k n r p, more)
     mods (_, TStar : rest) = bad ("после * нужно число: " <> show (take 1 rest))
     mods (_, TSlash : rest) = bad ("после / нужно число: " <> show (take 1 rest))
     mods done = done
     rate w = fromMaybe (bad ("не число: " <> w)) (decimal w)
+
+-- | Аргументы евклида: @(k,n)@ или @(k,n,поворот)@.
+euclidArgs :: [Tok] -> (Int, Int, Int, [Tok])
+euclidArgs ts = case ts of
+  TWord a : TComma : TWord b : TComma : TWord c : TRParen : rest -> (whole a, whole b, whole c, rest)
+  TWord a : TComma : TWord b : TRParen : rest -> (whole a, whole b, 0, rest)
+  _ -> bad ("евклид ждёт (k,n) или (k,n,поворот): " <> show (take 6 ts))
+  where
+    whole w = maybe (bad ("не целое: " <> w)) fromIntegral (integer w)
 
 -- | Десятичный литерал в точную дробь. Через Double он превратился бы в
 -- двоичное приближение (0.1 это не 1\/10), а всё время в паттернах
@@ -574,12 +741,33 @@ parseAtom ts = case ts of
   TAngle : rest -> case angleItems [] rest of
     (ps, TUnangle : more) -> (cat ps, more)
     _ -> bad "не закрыт <"
+  -- Полиметр: у слоёв разная длина, но общий шаг. Шаг берётся у первого
+  -- слоя либо задаётся через %.
+  TBrace : rest -> case braceSubs [] rest of
+    (subs, TUnbrace : more) ->
+      let (steps, more') = case more of
+            TPercent : TWord w : m -> (fromMaybe (bad ("после % нужно число: " <> w)) (decimal w), m)
+            TPercent : m -> bad ("после % нужно число: " <> show (take 1 m))
+            _ -> (defaultSteps subs, more)
+       in (stack (map (poly steps) subs), more')
+    _ -> bad "не закрыта {"
   _ -> bad ("неожидан токен: " <> show (take 1 ts))
   where
     angleItems acc rest = case rest of
       TUnangle : _ -> (reverse acc, rest)
       [] -> (reverse acc, rest)
       _ -> let (t, more) = parseTerm rest in angleItems (t : acc) more
+    braceSubs acc rest =
+      let (items, more) = seqItems rest
+       in case more of
+            TComma : after -> braceSubs (items : acc) after
+            _ -> (reverse (items : acc), more)
+    defaultSteps subs = case subs of
+      first : _ | not (null first) -> fromIntegral (length first)
+      _ -> 1
+    poly steps items
+      | null items = silence
+      | otherwise = fast (steps / fromIntegral (length items)) (assemble items)
 
 -- Ноты ---------------------------------------------------------------------
 

@@ -553,10 +553,13 @@ main = renderTrackWith defaultEnv "out/track.wav" master track >>= putStrLn
 1. Структура и наложение (сделано): `appLeft`, `struct`, `segment`, `euclid`,
    `euclidInv`, `superimpose`, `off`, `sometimesBy` с семейством,
    `undegradeBy`, `ply`, `iter`, `palindrome`, `whenmod`.
-2. Мини-нотация: `!` (повтор), `@` (вес доли), `(k,n,rot)` прямо в строке,
-   полиметр `{a b, c d e}%n`, `.` как быстрая группировка, диапазоны `0 .. 3`.
-3. Время и выбор: `linger`, `trunc`, `swingBy`, `chunk`, `rot`, `run`,
-   `someCyclesBy`, `randcat`, `wchoose`, `shuffle`, `scramble`.
+2. Мини-нотация (сделано): `!` (повтор), `@` (вес доли), `(k,n,rot)` прямо
+   в строке, полиметр `{a b, c d e}%n`, `.` как быстрая группировка,
+   диапазоны `0 .. 3`. Осталось: аккорды в строке и паттерны в аргументах
+   евклида.
+3. Время и выбор: сделаны `within`, `inside`, `swingBy` и `playWhen` (свинг
+   понадобился даунтемпо, глава 16). Осталось: `linger`, `trunc`, `chunk`,
+   `rot`, `run`, `someCyclesBy`, `randcat`, `wchoose`, `shuffle`, `scramble`.
 4. Высоты: лады (`scale`), арпеджиатор (`arp`), разбор аккордов в строке.
 5. Паттерны параметров. В Tidal параметр патча патчится так же, как ноты
    (`# cutoff "400 800"`). У нас параметры это `Sig`, поэтому нужен мост

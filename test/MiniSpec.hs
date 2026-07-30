@@ -17,6 +17,7 @@ tests =
     "Mini"
     [ atomTests
     , noteTests
+    , syntaxTests
     , groupTests
     , errorTests
     ]
@@ -208,3 +209,42 @@ failsOn src = do
   case r :: Either ErrorCall Int of
     Left _ -> pure ()
     Right n -> assertFailure ("разобралось в " <> show n <> " событий")
+
+-- | Разбор второй партии мини-нотации: веса, повторы, евклид, группировка,
+-- полиметр и диапазоны.
+syntaxTests :: TestTree
+syntaxTests =
+  testGroup
+    "синтаксис"
+    [ testCase "! повторяет атом" $
+        shape "bd!3" (0, 1) @?= [("bd", (0, 1 / 3)), ("bd", (1 / 3, 2 / 3)), ("bd", (2 / 3, 1))]
+    , testCase "одинокий ! повторяет предыдущий" $
+        shape "bd ! sn" (0, 1) @?= [("bd", (0, 1 / 3)), ("bd", (1 / 3, 2 / 3)), ("sn", (2 / 3, 1))]
+    , testCase "@ задаёт вес доли" $
+        shape "bd@3 sn" (0, 1) @?= [("bd", (0, 3 / 4)), ("sn", (3 / 4, 1))]
+    , testCase "@ у обоих" $
+        shape "bd@1 sn@3" (0, 1) @?= [("bd", (0, 1 / 4)), ("sn", (1 / 4, 1))]
+    , -- Евклид прямо в строке: то же, что euclid 3 8.
+      testCase "(3,8) это евклид" $
+        map snd (shape "bd(3,8)" (0, 1)) @?= [(0, 1 / 8), (3 / 8, 4 / 8), (6 / 8, 7 / 8)]
+    , -- Поворот на s шагов это rotL s/n, как в Tidal: рисунок тот же, но
+      -- начинается с другого места.
+      testCase "третий аргумент это поворот" $
+        map (fst . snd) (shape "bd(3,8,2)" (0, 1)) @?= [1 / 8, 1 / 2, 3 / 4]
+    , -- Точка это быстрая группировка: то же, что квадратные скобки.
+      testCase "точка группирует" $
+        shape "bd . sn sn" (0, 1) @?= shape "bd [sn sn]" (0, 1)
+    , testCase "три группы точками" $
+        map (fst . snd) (shape "bd . sn sn . hh" (0, 1)) @?= [0, 1 / 3, 1 / 2, 2 / 3]
+    , -- Полиметр: у слоёв своя длина, но общий шаг.
+      testCase "полиметр берёт шаг у первого слоя" $ do
+        map fst (shape "{bd sn, hh hh hh}" (0, 1)) @?= ["bd", "hh", "sn", "hh"]
+        map fst (shape "{bd sn, hh hh hh}" (1, 2)) @?= ["bd", "hh", "sn", "hh"]
+    , testCase "процент задаёт шаг" $
+        length (shape "{bd sn cp}%4" (0, 1)) @?= 4
+    , testCase "полиметр крутит слой по циклам" $ do
+        map fst (shape "{bd, hh cp}" (0, 1)) @?= ["bd", "hh"]
+        map fst (shape "{bd, hh cp}" (1, 2)) @?= ["bd", "cp"]
+    , testCase "диапазон разворачивается" $
+        map fst (shape "0 .. 3" (0, 1)) @?= ["0", "1", "2", "3"]
+    ]

@@ -18,6 +18,8 @@ tests =
     , degradeTests
     , lawTests
     , richTests
+    , weightTests
+    , swingTests
     ]
 
 -- | Событие: целый отрезок, видимая часть, значение.
@@ -289,4 +291,55 @@ richTests =
             vals (whenmod 4 2 rev (listToPat "abc")) (3, 4) @?= "cba"
             vals (whenmod 4 2 rev (listToPat "abc")) (4, 5) @?= "abc"
         ]
+    ]
+
+-- | Целые отрезки со значениями: рисунок последовательности целиком.
+layout :: Pattern a -> (Time, Time) -> [(a, (Time, Time))]
+layout p arc =
+  [ (eventValue e, (arcStart w, arcStop w))
+  | e <- sortOn (arcStart . eventPart) (q p arc)
+  , Just w <- [eventWhole e]
+  , arcStart w == arcStart (eventPart e)
+  ]
+
+weightTests :: TestTree
+weightTests =
+  testGroup
+    "веса и щели"
+    [ -- fastGap ускоряет, но не повторяет: хвост цикла пуст.
+      testCase "fastGap оставляет щель" $
+        layout (fastGap 2 (listToPat "ab")) (0, 1)
+          @?= [('a', (0, 1 / 4)), ('b', (1 / 4, 1 / 2))]
+    , testCase "fastGap 1 ничего не меняет" $
+        layout (fastGap 1 (listToPat "ab")) (0, 1) @?= layout (listToPat "ab") (0, 1)
+    , testCase "fastGap повторяется каждый цикл" $
+        layout (fastGap 2 (pure 'a')) (1, 2) @?= [('a', (1, 3 / 2))]
+    , -- timecat делит цикл по весам.
+      testCase "timecat делит цикл по весам" $
+        layout (timecat [(3, pure 'a'), (1, pure 'b')]) (0, 1)
+          @?= [('a', (0, 3 / 4)), ('b', (3 / 4, 1))]
+    , testCase "равные веса это fastcat" $
+        layout (timecat [(1, pure 'a'), (1, pure 'b')]) (0, 1)
+          @?= layout (fastcat [pure 'a', pure 'b']) (0, 1)
+    ]
+
+swingTests :: TestTree
+swingTests =
+  testGroup
+    "свинг"
+    [ -- Каждая вторая восьмая опаздывает на четверть своего шага, первая
+      -- остаётся на месте: ровно этим свинг и отличается от сдвига всего.
+      testCase "swingBy двигает только слабые доли" $
+        onsets (swingBy (1 / 4) 2 (fast 4 (pure 'a'))) (0, 1)
+          @?= [0, 3 / 8, 1 / 2, 7 / 8]
+    , testCase "нулевой свинг ничего не меняет" $
+        onsets (swingBy 0 2 (fast 4 (pure 'a'))) (0, 1) @?= onsets (fast 4 (pure 'a')) (0, 1)
+    , -- within трогает только свою половину цикла.
+      testCase "within работает на своей половине" $
+        onsets (within (0.5, 1) (fast 2) (fast 2 (pure 'a'))) (0, 1)
+          @?= [0, 1 / 2, 3 / 4]
+    , -- inside смотрит на цикл как на n коротких: переворачивается каждая
+      -- четверть отдельно, а не весь цикл.
+      testCase "inside переворачивает по частям" $
+        vals (inside 2 rev (listToPat "abcd")) (0, 1) @?= "badc"
     ]
