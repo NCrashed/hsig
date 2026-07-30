@@ -4,6 +4,7 @@ module DelaySpec (tests) where
 import Data.Vector.Unboxed qualified as U
 import Sound.Sig.Core
 import Sound.Sig.Delay
+import Sound.Sig.Osc (phase, sine)
 import Spectral (spectrum)
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -13,8 +14,64 @@ tests =
   testGroup
     "Delay"
     [ delayTests
+    , vdelayTests
     , combTests
     , allpassTests
+    ]
+
+vdelayTests :: TestTree
+vdelayTests =
+  testGroup
+    "vdelay"
+    [ -- Целое время сдвигает ровно на столько сэмплов и ничего не искажает.
+      testCase "целая задержка это сдвиг" $ do
+        let n = 200
+            src = fromSamples [fromIntegral i / 100 | i <- [1 .. n :: Int]]
+            xs = render defaultEnv (vdelay 0.01 (constant (10 / rate)) src)
+            want = render defaultEnv src
+        U.length xs @?= n
+        assertBool "хвост разошёлся" $
+          U.all (\i -> abs (xs U.! (i + 10) - want U.! i) < 1e-12) (U.enumFromN 0 (n - 10))
+    , -- Длину сохраняет и режет по короткому: это модуляционная задержка.
+      testCase "длина по короткому" $ do
+        let xs = render defaultEnv (vdelay 0.01 (constant 0.001) (takeSec 0.05 (sine 200)))
+            ys = render defaultEnv (vdelay 0.01 (takeSec 0.02 (constant 0.001)) (takeSec 0.05 (sine 200)))
+        U.length xs @?= round (0.05 * rate)
+        U.length ys @?= round (0.02 * rate)
+    , -- Дробная задержка обязана давать дробный сдвиг фазы, а не ближайший
+      -- целый: на движущемся источнике округление слышно щелчками.
+      testCase "полсэмпла это половина сдвига" $ do
+        let f = 500
+            src = sine (constant f)
+            half = render defaultEnv (takeSec 0.02 (vdelay 0.01 (constant (10.5 / rate)) src))
+            whole = render defaultEnv (takeSec 0.02 (vdelay 0.01 (constant (10 / rate)) src))
+            next = render defaultEnv (takeSec 0.02 (vdelay 0.01 (constant (11 / rate)) src))
+            mid i = (whole U.! i + next U.! i) / 2
+            k = 500
+        -- Ровно посередине между соседями, куда точнее шага сетки.
+        assertBool (show (half U.! k, mid k)) (abs (half U.! k - mid k) < 1e-3)
+        assertBool "совпало с целым" (abs (half U.! k - whole U.! k) > 1e-3)
+    , -- Ради чего всё: на плавно едущем времени выход обязан быть гладким.
+      testCase "движение времени не щёлкает" $ do
+        let sweep = constant 0.0005 + constant 0.0005 * mapSig sin (phase 0.5)
+            xs = render defaultEnv (takeSec 1 (vdelay 0.002 sweep (sine 300)))
+            jumps = U.maximum (U.map abs (U.zipWith (-) (U.tail xs) xs))
+            -- Синус 300 Гц сам меняется не быстрее 0.04 за сэмпл.
+            smooth = U.maximum (U.map abs (U.zipWith (-) (U.tail plain) plain))
+            plain = render defaultEnv (takeSec 1 (sine 300))
+        assertBool (show (jumps, smooth)) (jumps < 3 * smooth)
+    , testCase "не зависит от размера блока" $ do
+        let sig = vdelay 0.002 (constant 0.0007 + constant 0.0003 * mapSig sin (phase 3)) (sine 300)
+            big = render defaultEnv (takeSec 0.3 sig)
+            small = render defaultEnv {envBlock = 61} (takeSec 0.3 sig)
+        assertBool "разошлось" (U.maximum (U.map abs (U.zipWith (-) big small)) < 1e-12)
+    , -- Вырожденные значения зажимаются, а не читают мимо буфера.
+      testCase "время за пределами зажимается" $ do
+        let run t = render defaultEnv (takeSec 0.02 (vdelay 0.001 (constant t) (sine 300)))
+            finite = U.all (\x -> not (isNaN x) && not (isInfinite x))
+        assertBool "отрицательное" (finite (run (-1)))
+        assertBool "больше максимума" (finite (run 10))
+        assertBool "NaN" (finite (run (0 / 0)))
     ]
 
 rate :: Double

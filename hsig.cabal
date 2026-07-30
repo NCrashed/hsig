@@ -65,7 +65,10 @@ library
 executable demo
   import:         opts
   hs-source-dirs: tracks patches
-  other-modules:  Lead
+  other-modules:
+    Lead
+    Reactor
+
   main-is:        Demo.hs
 
   -- Файл трека это модуль Demo, а не Main, Cabal сам -main-is не подставляет.
@@ -92,6 +95,8 @@ test-suite hsig-test
     NonlinSpec
     OscSpec
     RandomSpec
+    Reactor
+    ReactorSpec
     RenderSpec
     ResampleSpec
     ScoreSpec

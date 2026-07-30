@@ -5,6 +5,7 @@ import Control.Category ((>>>))
 import Data.Function ((&))
 import Data.List (intercalate)
 import Lead (leadWide)
+import Reactor (reactor)
 import Sound.Sig
 
 env :: Env
@@ -139,6 +140,11 @@ sixteenBars =
     -- двойная цена ноты в стену времени не превращается.
     (stemOf "leadL" (leadSpec "L") (leadOut leadL)) {stemPan = -1}
   , (stemOf "leadR" (leadSpec "R") (leadOut leadR)) {stemPan = 1}
+  , -- Реактор: три пульсирующих стержня, обходящих голову. Образ ему делает
+    -- orbit, поэтому стемы это уже готовые уши, и в миксе они ставятся по
+    -- краям без дополнительной панорамы.
+    (stemOf "reactorL" (reactorSpec "L") (reactorOut leftChan)) {stemPan = -1}
+  , (stemOf "reactorR" (reactorSpec "R") (reactorOut rightChan)) {stemPan = 1}
   ]
   where
     -- Общий уровень: после компрессии и сайдчейна сумма стемов упирается в
@@ -232,6 +238,34 @@ sixteenBars =
     leadGain = compGainOf leadComp (leadL + leadR)
     leadOut chan = duck (chan * leadGain) * gate * constant leadLevel
 
+    -- Оборот за такт, вспышки восьмыми: за оборот каждый стержень вспыхивает
+    -- восемь раз, и каждый раз в новой точке круга.
+    reactorOrbit = 1 / fromRational barCycles :: Double
+    reactorPulse = 4 :: Double
+    reactorNotes = [440, 523.25, 659.25]
+    -- Уровень по замеру: вспышка узкая, средняя энергия у стержня низкая,
+    -- поэтому нормированный патч приходится поднимать заметно, чтобы он сел
+    -- рядом с лидом.
+    reactorLevel = 2.2 :: Double
+    -- spread нулевой: разведённые поровну стержни гасят образ, см. Reactor.
+    reactorSpread = 0 :: Double
+    reactorSig = reactor reactorOrbit reactorPulse reactorSpread reactorNotes
+    reactorOut chan = duck (chan reactorSig) * gate * constant reactorLevel
+    reactorSpec side =
+      "реактор "
+        <> side
+        <> " "
+        <> show reactorNotes
+        <> ", оборот "
+        <> show reactorOrbit
+        <> " Гц, разнос "
+        <> show reactorSpread
+        <> ", вспышки "
+        <> show reactorPulse
+        <> " Гц x"
+        <> show reactorLevel
+        <> duckSpec
+
 -- | Мастер-каскад вместо лимитера.
 --
 -- Пиков выше 0.8 в миксе пара десятков на полтора миллиона сэмплов, и все
@@ -243,7 +277,7 @@ sixteenBars =
 -- Трим после насыщения: без него пик правого канала садится на 0.985, а
 -- запас у мастера должен быть.
 master :: Stereo -> Stereo
-master = bothChannels (shaper (constant 1.2) >>> (* constant 0.92))
+master = bothChannels (shaper (constant 1.2) >>> (* constant 0.9))
 
 main :: IO ()
 main = do

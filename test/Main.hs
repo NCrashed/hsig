@@ -11,6 +11,7 @@ import MiniSpec qualified
 import NonlinSpec qualified
 import OscSpec qualified
 import RandomSpec qualified
+import ReactorSpec qualified
 import RenderSpec qualified
 import ResampleSpec qualified
 import ScoreSpec qualified
@@ -25,6 +26,7 @@ main =
       "hsig"
       [ CoreSpec.tests
       , RandomSpec.tests
+      , ReactorSpec.tests
       , OscSpec.tests
       , EnvelopeSpec.tests
       , FilterSpec.tests
