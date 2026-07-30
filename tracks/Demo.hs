@@ -1,82 +1,42 @@
--- | Демо-трек: подряд всё, что умеет синтезатор на текущем этапе.
+-- | Демо-трек: шестнадцать тактов на 120 ударах в минуту.
+--
+-- Написан так, как задаёт разд. 10 дизайна: имя стема плюс сигнал, ритм
+-- строкой, ноты по именам. Кэш включён только там, где рендер долгий, и
+-- версией в строке: правишь патч - двигаешь версию.
 module Demo (main) where
 
 import Control.Category ((>>>))
-import Data.Function ((&))
-import Data.List (intercalate)
 import Lead (leadWide)
 import Reactor (reactor)
 import Sound.Sig
 
-env :: Env
-env = defaultEnv
-
-rate :: Double
-rate = envRate env
-
--- | Нота: длительность задаёт огибающая, потому что (*) обрезает по
--- короткому.
-voice :: (Sig -> Sig) -> Double -> Double -> Sig
-voice wave freq dur = wave (constant freq) * adsr 0.01 0.15 0.6 0.08 dur * 0.4
-
--- | Щипок: мгновенная атака и экспоненциальный спад. Хвост уже неслышим,
--- когда трапеция закрывает ноту.
-pluck :: Double -> Double -> Sig
-pluck freq dur = saw (constant freq) * expdecay 0.15 * gate 0.01 dur * 0.5
-
--- | Пила через лестничный фильтр: катофф едет сверху вниз, резонанс поёт.
-filtered :: Double -> Sig
-filtered dur = ladder cut 0.85 (saw 110 * 0.3) * gate 0.01 dur
-  where
-    cut = line [(0, 8000), (dur, 200)]
-
--- | Почти цепочка из разд. 9: фильтр с резонансом и шейпер внутри
--- oversample, следом гребёнка. Катофф тянется дольше ноты, чтобы срез
--- задержки в oversample не обрезал хвост огибающей.
-gritty :: Double -> Sig
-gritty dur =
-  saw 110
-    * 0.3
-    & oversample 8 (ladder cut 0.8 >>> shaper 4)
-    & comb 0.011 0.6
-    & (* (gate 0.01 dur * 0.3))
-  where
-    cut = line [(0, 6000), (dur + 0.1, 300)]
-
--- | Свип 20 - 8000 Гц: на нём слышно, что гармоники не заворачиваются.
-sweep :: Double -> Sig
-sweep dur = saw (fromSamples freqs) * gate 0.01 dur * 0.4
-  where
-    n = round (dur * rate) :: Int
-    freqs = [20 + (8000 - 20) * fromIntegral i / fromIntegral n | i <- [0 .. n - 1]]
-
--- | Склейка встык. Микшера и планировщика ещё нет, они на M6.
-oneAfterAnother :: [Sig] -> Sig
-oneAfterAnother = fromSamples . concatMap (samples env)
-
-track :: Sig
-track =
-  oneAfterAnother
-    [ voice sine 440 1
-    , voice saw 110 1.5
-    , voice square 110 1.5
-    , voice tri 110 1.5
-    , voice (const (noise 0)) 0 1
-    , pluck 220 1.5
-    , filtered 3
-    , gritty 3
-    , sweep 4
-    ]
-
--- Ритм из паттернов ---------------------------------------------------------
-
 -- | Такт это два цикла: при четырёх долях в цикле выходит 120 ударов в
 -- минуту. Темп задаётся паттерном, отдельного поля под него нет.
-barCycles :: Time
-barCycles = 2
-
 bar :: Pattern a -> Pattern a
-bar = slow barCycles
+bar = slow 2
+
+-- | Шестнадцать тактов по два цикла.
+trackSec :: Double
+trackSec = 32
+
+-- | Окно всего трека: оно и задаёт длину, потому что паттерн бесконечен.
+-- Края гасятся, иначе на обрыве щёлкнет.
+window :: Sig
+window = gate 0.01 trackSec
+
+-- | Трим перед мастером: им задаётся, насколько плотно микс входит в
+-- насыщение (см. master), поэтому он общий на все стемы.
+mixLevel :: Sig
+mixLevel = 0.9
+
+-- Инструменты ---------------------------------------------------------------
+
+-- | Бочка: синус с быстрым спадом по высоте.
+kickInst :: Instrument
+kickInst n =
+  sine (constant (noteFreq n) * (1 + 6 * expdecay 0.02))
+    * adsr 0.001 0.15 0 0.02 (min 0.2 (noteDur n))
+    * constant (noteAmp n)
 
 -- | Бас: пила через лестничный фильтр с быстрой огибающей катоффа.
 bassInst :: Instrument
@@ -87,198 +47,88 @@ bassInst n =
   where
     cut = 200 + 2500 * expdecay 0.07
 
--- | Бочка: синус с быстрым спадом по высоте.
-kickInst :: Instrument
-kickInst n =
-  sine (constant (noteFreq n) * (1 + 6 * expdecay 0.02))
-    * adsr 0.001 0.15 0 0.02 (min 0.2 (noteDur n))
-    * constant (noteAmp n)
-
--- | Хэт: отфильтрованный шум с мгновенной атакой.
+-- | Хэт: отфильтрованный шум с мгновенной атакой. Частота ему не нужна, он
+-- живёт по метке из паттерна.
 hatInst :: Instrument
 hatInst n =
   highpass 6000 (noise 1)
     * adsr 0.001 0.04 0 0.01 (noteDur n * 0.4)
     * constant (noteAmp n * 0.25)
 
--- | Шестнадцать тактов по два цикла: 32 секунды при 120 ударах в минуту.
-trackSec :: Double
-trackSec = 32
+-- Трек ----------------------------------------------------------------------
 
--- | Параметры компрессора одним значением: порог, отношение, атака,
--- восстановление. Одно и то же значение идёт и в сигнал, и в спецификацию
--- стема, иначе при односторонней правке они разъезжаются и кэш отдаёт
--- старый звук.
-data Comp = Comp Double Double Double Double
+-- | Баланс выставлен по замеру среднеквадратичных: бас, лид и реактор на
+-- 6-9 дБ ниже бочки, хэт на 11. Уровни это Sig, поэтому в местах
+-- использования не нужен constant.
+kickLevel, bassLevel, hatLevel, leadLevel, reactorLevel :: Sig
+kickLevel = 0.45
+bassLevel = 2
+hatLevel = 1.5
+leadLevel = 1.2
+reactorLevel = 2.2
 
-compWith :: Comp -> Fx
-compWith (Comp t r a rl) = compress t r a rl
+-- | Шина стема: накачка от бочки, окно трека и уровень в миксе. Бочка идёт
+-- мимо шины, качать её нечем.
+bus :: Sig -> Fx
+bus level sig = duck sig * window * level * mixLevel
 
-compGainOf :: Comp -> Sig -> Sig
-compGainOf (Comp t r a rl) = compressGain t r a rl
-
-showComp :: Comp -> String
-showComp (Comp t r a rl) = intercalate "/" (map show [t, r, a, rl])
-
--- | Трапеция по краям обязательна: рендер режет по времени жёстко, и без
--- неё последняя нота обрывается на середине релиза, то есть щелчком.
---
--- Лид это приёмочный патч разд. 9, бас и хэт держат ритм под ним.
-sixteenBars :: [Stem]
-sixteenBars =
-  [ stemOf "kick" kickSpec (kickSig * window)
-  , stemOf "bass" bassSpec (duck (compWith bassComp (play bassInst bassPat)) * window * constant bassLevel)
-  , (stemOf "hat" hatSpec (duck (play hatInst hatPat) * window * constant hatLevel)) {stemPan = 0.35}
-  , -- Лид стерео: стек унисона разведён по панораме, поэтому каналы пишутся
-    -- двумя стемами и ставятся по краям. Считаются они параллельно, так что
-    -- двойная цена ноты в стену времени не превращается.
-    (stemOf "leadL" (leadSpec "L") (leadOut leadL)) {stemPan = -1}
-  , (stemOf "leadR" (leadSpec "R") (leadOut leadR)) {stemPan = 1}
-  , -- Реактор: три пульсирующих стержня, обходящих голову. Образ ему делает
-    -- orbit, поэтому стемы это уже готовые уши, и в миксе они ставятся по
-    -- краям без дополнительной панорамы.
-    (stemOf "reactorL" (reactorSpec "L") (reactorOut leftChan)) {stemPan = -1}
-  , (stemOf "reactorR" (reactorSpec "R") (reactorOut rightChan)) {stemPan = 1}
+track :: [Stem]
+track =
+  [ stem "kick" (kickSig * window * mixLevel)
+  , stem "bass" (bus bassLevel (compress 0.04 4 0.005 0.08 (play bassInst (bar "a1 a1 d2 a1"))))
+  , panned 0.35 (stem "hat" (bus hatLevel (play hatInst (bar (degradeBy 0.25 "hh*8")))))
   ]
+    -- Кэш только на дорогих стемах: лид и реактор считаются десятки секунд.
+    -- Версия в строке двигается вместе с правкой патча, длина входит в неё же
+    -- (в ключ она не попадает, см. cached).
+    <> map (cached (version "лид разд. 9, широкий, v1")) (stereoStems "lead" leadOut)
+    <> map (cached (version "реактор, три стержня, v1")) (stereoStems "reactor" reactorOut)
   where
-    -- Общий уровень: после компрессии и сайдчейна сумма стемов упирается в
-    -- полную шкалу, а мастер-лимитера у renderTrack нет. Панорама по закону
-    -- равной мощности отдаёт каналу 1/sqrt 2, отсюда и запас против моно.
-    level = 0.9 :: Double
-    -- Баланс выставлен по замеру среднеквадратичных: раньше бочка была на
-    -- 19 дБ громче всего остального, трек был бочкой с еле слышным
-    -- оформлением, и стерео-образ широкого лида в нём было не разобрать.
-    -- Ориентир: бас, лид и реактор на 6-9 дБ ниже бочки, хэт на 11.
-    kickLevel = 0.45 :: Double
-    bassLevel = 2 :: Double
-    hatLevel = 1.5 :: Double
-    leadLevel = 1.2 :: Double
-    window = gate 0.01 trackSec * constant level
+    version s = s <> ", " <> show trackSec <> " с"
 
-    -- Ритм читается строкой: мини-нотация Tidal, частоты в герцах.
-    kickNotes = "55*4"
-    bassNotes = "55 55 73.42 55"
-    hatNotes = "1*8"
-    -- Пауза в третьей доле, чтобы фраза дышала.
-    leadNotes = "440 523.25 ~ 659.25"
-    hatDegrade = 0.25 :: Double
-    duckDepth = 0.7 :: Double
-    leadEvery = 4 :: Int
-    -- Пороги выставлены по замеренным максимумам следящих огибающих (бас
-    -- 0.064, сумма каналов лида 0.272): взятые на глаз оказались выше их, и
-    -- компрессоры не срабатывали ни разу.
-    bassComp = Comp 0.04 4 0.005 0.08
-    leadComp = Comp 0.18 3 0.01 0.1
+-- | Бочка входит в определение пять раз, поэтому share (разд. 3): она же
+-- управляет накачкой остальных стемов. Осознанное отклонение от хаддока
+-- share: сигнал длиной в трек стоит памяти (около 12 МБ на 32 секундах),
+-- зато не считается пятикратно.
+kickSig :: Sig
+kickSig = share (play kickInst (bar "a1*4") * kickLevel)
 
-    -- Спецификация это ключ кэша (см. renderStem), поэтому собирается из тех
-    -- же значений, что идут в сигнал: всё, что меняет звук и не дошло до
-    -- спецификации, досталось бы из кэша старым звуком.
-    tempo = ", такт " <> show barCycles <> " цикла, уровень " <> show level
-    kickSpec = "sine 55 pitchdrop x" <> show kickLevel <> ", " <> kickNotes <> tempo
-    -- Накачка зависит от бочки, поэтому спецификация бочки входит в
-    -- спецификации всех стемов, которые она качает: правка кика обязана
-    -- перерендерить и их. Темп и общий уровень дописываются и своим краем:
-    -- через накачку они пришли бы только транзитивно и исчезли бы вместе с
-    -- ней.
-    duckSpec = ", duck " <> show duckDepth <> " <" <> kickSpec <> ">" <> tempo
-    bassSpec =
-      "saw+ladder 0.7 x"
-        <> show bassLevel
-        <> ", "
-        <> bassNotes
-        <> ", comp "
-        <> showComp bassComp
-        <> duckSpec
-    hatSpec =
-      "noise+hp 6k x"
-        <> show hatLevel
-        <> ", "
-        <> hatNotes
-        <> ", degrade "
-        <> show hatDegrade
-        <> duckSpec
-    leadSpec side =
-      "разд. 9 широкий "
-        <> side
-        <> ", "
-        <> leadNotes
-        <> ", every "
-        <> show leadEvery
-        <> " rev, comp "
-        <> showComp leadComp
-        <> " связанный x"
-        <> show leadLevel
-        <> duckSpec
+-- | Накачка от бочки.
+duck :: Fx
+duck = sidechain kickSig 0.7
 
-    -- Бочка входит в определение пять раз, поэтому share (разд. 3). Это
-    -- осознанное отклонение от оговорки в хаддоке share: сигнал длиной в
-    -- трек держится в памяти целиком (12 МБ на 32 секундах), зато не
-    -- считается впятеро.
-    kickSig = share (play kickInst kickPat * constant kickLevel)
-    duck = sidechain kickSig duckDepth
-    kickPat = bar (noteOf <$> numbers kickNotes)
-    bassPat = bar (noteOf <$> numbers bassNotes)
-    hatPat = bar (degradeBy hatDegrade (noteOf <$> numbers hatNotes))
-    leadPat = bar (every leadEvery rev (noteOf <$> numbers leadNotes))
+-- | Лид: широкий унисон, каналы сжимаются одним коэффициентом по сумме,
+-- иначе громче звучащий канал давился бы сильнее и образ дышал бы.
+leadOut :: Stereo
+leadOut = bothChannels out (Stereo l r)
+  where
+    Stereo wideL wideR = playStereo leadWide (bar (every 4 rev "a4 c5 ~ e5"))
+    l = share wideL
+    r = share wideR
+    gain = compressGain 0.18 3 0.01 0.1 (l + r)
+    out chan = bus leadLevel (chan * gain)
 
-    -- Компрессор на канал разваливал бы образ: тот канал, который сейчас
-    -- громче, давился бы сильнее. Поэтому коэффициент считается один раз по
-    -- сумме каналов и умножается на оба. Каналы под share: их читают и
-    -- сумма, и выход, а оба стема считаются в одном процессе и делят кэш,
-    -- иначе цепочка лида посчиталась бы не два раза, а шесть.
-    leadStereo = playStereo leadWide leadPat
-    leadL = share (leftChan leadStereo)
-    leadR = share (rightChan leadStereo)
-    leadGain = compGainOf leadComp (leadL + leadR)
-    leadOut chan = duck (chan * leadGain) * window * constant leadLevel
-
-    -- Оборот за такт, вспышки восьмыми: за оборот каждый стержень вспыхивает
-    -- восемь раз, и каждый раз в новой точке круга.
-    reactorOrbit = 1 / fromRational barCycles :: Double
-    reactorPulse = 4 :: Double
-    reactorNotes = [440, 523.25, 659.25]
-    -- Уровень по замеру: вспышка узкая, средняя энергия у стержня низкая,
-    -- поэтому нормированный патч приходится поднимать заметно, чтобы он сел
-    -- рядом с лидом.
-    reactorLevel = 2.2 :: Double
-    -- spread нулевой: при разносе вспышки обходят круг вперемешку, см. Reactor.
-    reactorSpread = 0 :: Double
-    reactorSig = reactor reactorOrbit reactorPulse reactorSpread reactorNotes
-    reactorOut chan = duck (chan reactorSig) * window * constant reactorLevel
-    reactorSpec side =
-      "реактор "
-        <> side
-        <> " "
-        <> show reactorNotes
-        <> ", оборот "
-        <> show reactorOrbit
-        <> " Гц, разнос "
-        <> show reactorSpread
-        <> ", вспышки "
-        <> show reactorPulse
-        <> " Гц x"
-        <> show reactorLevel
-        <> duckSpec
+-- | Реактор: три пульсирующих стержня, обходящих голову. Оборот за такт,
+-- вспышки восьмыми, разнос нулевой (см. Reactor).
+reactorOut :: Stereo
+reactorOut = bothChannels (bus reactorLevel) sig
+  where
+    -- Оборот за такт это 0.5 Гц, вспышки восьмыми это 4 Гц.
+    sig = reactor 0.5 4 0 (map noteHz ["a4", "c5", "e5"])
 
 -- | Мастер-каскад вместо лимитера.
 --
--- Пиков выше 0.8 в миксе пара десятков на полтора миллиона сэмплов, и все
--- на совпадении атаки бочки с нотой лида. Резать ради них весь трек на 3 дБ
+-- Пиков выше 0.8 в миксе пара десятков на полтора миллиона сэмплов, и все на
+-- совпадении атаки бочки с нотой лида. Резать ради них весь трек на 3 дБ
 -- нельзя, а tanh поднимает середину и придерживает верхушки: нормировка у
--- shaper такая, что полная шкала остаётся на месте. Плотность от него
--- растёт на 3 дБ: RMS -18.2 dBFS против -21.1 без него.
+-- shaper такая, что полная шкала остаётся на месте. Плотность от него растёт
+-- на 3 дБ. Трим после насыщения оставляет запас.
 --
 -- Обработка идёт при сведении, поэтому её правка не сбивает кэш стемов.
--- Трим после насыщения: без него пик правого канала выходит за единицу, а
--- запас у мастера должен быть. С тримом 0.858 слева и 0.932 справа.
 master :: Stereo -> Stereo
-master = bothChannels (shaper (constant 1.2) >>> (* constant 0.9))
+master = bothChannels (shaper 1.2 >>> (* 0.9))
 
 main :: IO ()
 main = do
-  report <- writeWav env Bits16 tour track
-  putStrLn (tour <> ": пик " <> show (clipPeak report))
-  trackPath <- renderTrackWith env trackSec "out/track.wav" master sixteenBars
-  putStrLn (trackPath <> ": 16 тактов, лид по разд. 9")
-  where
-    tour = "out/demo.wav"
+  path <- renderTrackWith defaultEnv "out/track.wav" master track
+  putStrLn (path <> ": тактов " <> show (round (trackSec / 2) :: Int))

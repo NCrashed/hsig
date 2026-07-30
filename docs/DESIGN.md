@@ -67,10 +67,11 @@ Yampa, `conduit`/`streamly` в публичном API. Процессор — о
 -- Sound/Sig/Core.hs
 
 data Env = Env
-  { envRate  :: !Double   -- текущая частота дискретизации (меняется в oversample)
-  , envBlock :: !Int      -- размер блока в сэмплах, по умолчанию 4096
-  , envSeed  :: !Int      -- база для детерминированного шума
-  } deriving (Eq, Ord, Show)
+  { envRate   :: !Double  -- текущая частота дискретизации (меняется в oversample)
+  , envBlock  :: !Int     -- размер блока в сэмплах, по умолчанию 4096
+  , envSeed   :: !Int     -- база для детерминированного шума
+  , envMaxSec :: !Double  -- потолок длины стема и мастера, страховка от
+  } deriving (Eq, Ord, Show) -- забытого окна (разд. 8), по умолчанию 600
 
 type Chunks = [U.Vector Double]     -- ленивый список блоков; конечный или бесконечный
 
@@ -273,8 +274,8 @@ data Note = Note
   , noteDur   :: !Double
   , noteFreq  :: !Double
   , noteAmp   :: !Double
-  , noteParams:: !(Map String Double)
-  }
+  , noteLabel :: !String            -- слово из паттерна: по нему барабаны
+  }                                 -- выбирают голос, мелодия его игнорирует
 
 type Instrument = Note -> Sig       -- сигнал начинается с t=0, длина конечна
 ```
@@ -299,10 +300,20 @@ type Instrument = Note -> Sig       -- сигнал начинается с t=0,
 ## 8. Рендер и стемы
 
 ```haskell
-data Stem = Stem { stemName :: String, stemSig :: Sig }
+data Stem = Stem
+  { stemName  :: String
+  , stemSig   :: Sig
+  , stemPan   :: Double        -- -1 слева, 0 по центру, 1 справа
+  , stemCache :: Maybe String  -- спецификация, если кэш включён
+  }
+
+stem       :: String -> Sig -> Stem      -- по центру, без кэша
+cached     :: String -> Stem -> Stem
+panned     :: Double -> Stem -> Stem
+stereoStem :: String -> Stereo -> [Stem]
 
 renderStem :: Env -> FilePath -> Stem -> IO FilePath
-mixStems   :: Env -> [FilePath] -> Sig
+mixStems   :: Env -> [FilePath] -> IO Sig
 ```
 
 Каждый стем рендерится в отдельный файл на диске, микс собирается из файлов.
@@ -310,9 +321,22 @@ mixStems   :: Env -> [FilePath] -> Sig
 пять минут при 384 кГц это порядка гигабайта на канал. Плюс это даёт итерацию
 над одним стемом без пересчёта остальных.
 
-Кэш: ключ — хэш от сериализованной спецификации стема плюс `Env`. Реализация
-кэша откладывается до этапа M8, но имена файлов сразу закладывать в форме
-`out/<stem>-<hash>.wav`.
+Кэш: ключ - хэш от спецификации стема плюс `Env` (`envSeed`, `envRate`), имя
+файла `out/<stem>-<hash>.wav`. По умолчанию кэш выключен: стем без него пишется
+в `out/<stem>.wav` и считается заново каждый прогон. Причина - `Sig` это
+функция, сериализовать её нечем, спецификацию пишет руками автор трека, и
+забытая правка строки даёт старый звук молча. Включать кэш имеет смысл там, где
+рендер долгий, и явно (`cached`). Длина стема в ключ не входит: её задаёт
+материал, узнать её заранее нельзя, поэтому длину описывает та же строка.
+
+Уборка оставляет несколько последних версий каждого стема, а не одну: рабочий
+цикл это метание между вариантами (превью на восемь секунд и полный прогон),
+и снос всего, кроме текущего, отменял бы кэш ровно там, где он нужен.
+
+Стем обязан кончаться сам, поэтому забытое окно ловится потолком `envMaxSec`
+(по умолчанию 600 с) - и для стема, и для мастера, которому обработка при
+сведении тоже может добавить бесконечный хвост. Трек честно длиннее - потолок
+поднимают в `Env`.
 
 ---
 
@@ -351,29 +375,69 @@ lead n = unison 7 18 (freq * pEnv)
 
 ## 10. Целевая эргономика
 
-Так должен выглядеть файл трека. Это критерий приёмки для API: если получилось
-не так — API неправильный, а не пример.
+Так выглядит файл трека. Это критерий приёмки для API: если получилось не так -
+API неправильный, а не пример. Рабочий вариант целиком: `tracks/Demo.hs`.
 
 ```haskell
 -- tracks/Demo.hs
-module Demo where
+module Demo (main) where
 
 import Sound.Sig
-import Patches.Lead
-import Patches.Bass
-import Patches.Drums
+import Lead (leadWide)
+
+-- Такт это два цикла: четыре доли в цикле дают 120 ударов в минуту. Темп
+-- задаёт паттерн, отдельного поля под него нет.
+bar :: Pattern a -> Pattern a
+bar = slow 2
+
+trackSec :: Double
+trackSec = 32
+
+-- Паттерн бесконечен, а длина трека берётся из материала: значит стем
+-- обязан кончиться сам. Окно на весь трек и есть его длина.
+window :: Sig
+window = gate 0.01 trackSec
+
+-- Шина стема: накачка от бочки, окно и уровень в миксе.
+bus :: Sig -> Fx
+bus level sig = sidechain kickSig 0.7 sig * window * level
 
 track :: [Stem]
 track =
-  [ Stem "drums" $ play drumKit  $ stack [ "bd*4", "~ cp ~ cp" ]
-  , Stem "bass"  $ play bassInst $ every 4 (fast 2) "a1 ~ a1 c2"
-  , Stem "lead"  $ play lead leadPattern
-                 & sidechain (play kick "bd*4") 0.7
+  [ stem "kick" (kickSig * window)
+  , stem "bass" (bus 2 (play bassInst (bar (every 4 (fast 2) "a1 ~ a1 c2"))))
+  , panned 0.35 (stem "hat" (bus 1.5 (play hatInst (bar (degradeBy 0.25 "hh*8")))))
   ]
+    -- Кэш выключен по умолчанию и включается там, где рендер долгий: версия в
+    -- строке двигается вместе с правкой патча, длина входит в неё же.
+    <> map (cached ("лид v1, " <> show trackSec <> " с")) (stereoStems "lead" leadOut)
+
+kickSig :: Sig
+kickSig = share (play kickInst (bar "a1*4"))
+
+leadOut :: Stereo
+leadOut = bothChannels (bus 1.2) (playStereo leadWide (bar "a4 c5 ~ e5"))
+
+-- Мастер идёт после сведения, поэтому его правка не сбивает кэш стемов.
+master :: Stereo -> Stereo
+master = bothChannels (shaper 1.2 >>> (* 0.9))
 
 main :: IO ()
-main = renderTrack defaultEnv "out/demo.wav" track
+main = renderTrackWith defaultEnv "out/track.wav" master track >>= putStrLn
 ```
+
+Что из этого следует для API:
+
+- стем это имя плюс сигнал (`stem`), панорама и кэш - опции поверх
+  (`panned`, `cached`), а не поля, которые надо заполнять;
+- ритм и ноты пишутся строками: `"a1 ~ a1 c2"` это `Pattern Note`, имена нот
+  переводятся в герцы (`OverloadedStrings` включён в стансе трека);
+- длина трека не аргумент рендера, а свойство материала: аргументом её пришлось
+  бы повторять в каждом вызове и держать согласованной с окном;
+- готовое стерео (`orbit`, широкий унисон) кладётся в микс как `stereoStem`, а
+  не расписывается по каналам руками;
+- обработка мастера отдельным аргументом (`renderTrackWith`), потому что она
+  идёт после сведения и её правка не должна сбивать кэш стемов.
 
 ---
 
@@ -533,6 +597,7 @@ main = renderTrack defaultEnv "out/demo.wav" track
 - `vector-fftw` — только для тестов и проектирования FIR
 - `WAVE` или `hsndfile` — ввод-вывод
 - `containers`, `deepseq`
+- `directory`, `filepath`, `temporary`, `time` - файлы стемов и кэш (разд. 8)
 - `tasty`, `tasty-hunit`, `tasty-quickcheck`
 - `criterion` — опционально, после M7
 

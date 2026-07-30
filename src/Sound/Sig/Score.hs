@@ -40,12 +40,12 @@ module Sound.Sig.Score
   , Note (..)
   , Instrument
   , noteOf
+  , notes
+  , noteHzOf
+  , noteHz
   ) where
 
-import Data.Char (isDigit, isSpace)
-import Data.Map.Strict (Map)
-import Data.Map.Strict qualified as Map
-
+import Data.Char (isDigit, isSpace, toLower)
 import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Ratio (denominator, numerator, (%))
 import Data.String (IsString (..))
@@ -430,14 +430,16 @@ data Note = Note
   , noteDur :: !Double
   , noteFreq :: !Double
   , noteAmp :: !Double
-  , noteParams :: !(Map String Double)
+  , noteLabel :: !String
+  -- ^ слово из паттерна как есть: по нему набор барабанов выбирает голос,
+  -- а мелодический инструмент его игнорирует
   }
   deriving (Eq, Show)
 
 -- | Сигнал ноты начинается с нуля и конечен.
 type Instrument = Note -> Sig
 
--- | Нота по частоте: амплитуда единичная, параметров нет.
+-- | Нота по частоте: амплитуда единичная.
 noteOf :: Double -> Note
 noteOf f =
   Note
@@ -445,5 +447,59 @@ noteOf f =
     , noteDur = 0
     , noteFreq = f
     , noteAmp = 1
-    , noteParams = Map.empty
+    , noteLabel = ""
     }
+
+-- | Частота по имени ноты: @a4@ это 440 Гц, @a1@ - 55, @c#2@ и @db2@ одно и
+-- то же. Регистр не важен, диез это @#@ или @s@, бемоль @b@ или @f@,
+-- октава может быть отрицательной (@c-1@).
+--
+-- Nothing на всём, что нотой не является: так набор барабанов и отличает
+-- @bd@ от @b2@.
+noteHzOf :: String -> Maybe Double
+noteHzOf src = do
+  (c : rest) <- pure (map toLower src)
+  step <- lookup c [('c', 0), ('d', 2), ('e', 4), ('f', 5), ('g', 7), ('a', 9), ('b', 11)]
+  (acc, octText) <- pure (shift rest)
+  oct <- readOctave octText
+  let midi = 12 * (oct + 1) + step + acc
+  pure (440 * 2 ** ((fromIntegral midi - 69) / 12))
+  where
+    shift ('#' : r) = (1 :: Int, r)
+    shift ('s' : r) = (1, r)
+    shift ('b' : r) = (-1, r)
+    shift ('f' : r) = (-1, r)
+    shift r = (0, r)
+    readOctave t = case reads t of
+      [(v, "")] -> Just (v :: Int)
+      _ -> Nothing
+
+-- | Мини-нотация нотами: имя ноты даёт частоту, число берётся как частота в
+-- герцах, всё прочее остаётся меткой для набора барабанов.
+--
+-- Слово из паттерна всегда попадает в 'noteLabel', поэтому инструмент может
+-- смотреть и на частоту, и на имя.
+--
+-- Не нота и не число это частота ноль, а не ошибка: так пишутся барабаны
+-- (@\"bd*4\"@). Мелодическая опечатка (@c22@) поэтому даёт тишину молча -
+-- 'noteHz' в параметрах патча, наоборот, падает. Амплитуда всегда единичная,
+-- синтаксиса под неё нет: меняют её через @fmap@.
+notes :: String -> Pattern Note
+notes = fmap toNote . parsePat
+  where
+    toNote w = (noteOf (freqOf w)) {noteLabel = w}
+    freqOf w = case noteHzOf w of
+      Just f -> f
+      Nothing -> case reads w of
+        [(v, "")] -> v
+        _ -> 0
+
+-- | Строка это паттерн нот: @"a1 ~ a1 c2"@, @"bd*4"@, @"55 73.42"@.
+instance IsString (Pattern Note) where
+  fromString = notes
+
+-- | Частота по имени ноты, для параметров патчей: там паттерна нет, а имена
+-- читаются лучше герцев. Незнакомое имя это опечатка автора, поэтому падает
+-- сразу, а не подставляет тишину.
+noteHz :: String -> Double
+noteHz src = fromMaybe (error ("hsig: не нота: " <> src)) (noteHzOf src)

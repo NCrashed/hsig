@@ -8,11 +8,13 @@
 module Sound.Sig.Render
   ( play
   , playStereo
-  , Stem (..)
-  , stemOf
+  , Stem
+  , stem
+  , cached
+  , panned
+  , stereoStems
   , renderStem
   , mixStems
-  , mixStemsStereo
   , renderTrack
   , renderTrackWith
   ) where
@@ -21,8 +23,9 @@ import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (IOException, SomeException, catch, throwIO, try)
 import Control.Monad (forM_, unless, when)
 import Control.Monad.ST (runST)
-import Data.List (stripPrefix)
-import Data.Maybe (fromMaybe)
+import Data.List (sortOn, stripPrefix)
+import Data.Maybe (fromMaybe, isJust)
+import Data.Ord (Down (..))
 import Data.Vector.Unboxed qualified as U
 import Data.Vector.Unboxed.Mutable qualified as UM
 import Numeric (showHex)
@@ -31,14 +34,15 @@ import Sound.Sig.IO
 import Sound.Sig.Random (wordAt)
 import Sound.Sig.Score
 import Sound.Sig.Stereo
-import System.Directory (doesFileExist, listDirectory, removeFile)
+import System.Directory (doesFileExist, getModificationTime, listDirectory, removeFile, renameFile)
 import System.FilePath (takeDirectory, takeExtension, takeFileName, (</>))
 import System.IO (hPutStrLn, stderr)
 
 -- Планировщик ---------------------------------------------------------------
 
--- | Играет паттерн инструментом. Сигнал бесконечен: длину задаёт тот, кто
--- рендерит.
+-- | Играет паттерн инструментом. Сигнал бесконечен, потому что паттерн
+-- бесконечен: длину задаёт материал трека (умножение на окно или огибающую),
+-- рендер её не подрезает.
 --
 -- Нота запускается, когда начало её целого отрезка попадает в текущий блок,
 -- поэтому каждое событие срабатывает ровно один раз.
@@ -144,81 +148,139 @@ overlapAdd minLen tailBuf parts = runST $ do
 
 data Stem = Stem
   { stemName :: String
-  , stemSpec :: String
-  -- ^ описание стема: по нему считается ключ кэша, см. 'renderStem'
+  , stemSig :: Sig
   , stemPan :: Double
   -- ^ панорама в миксе: -1 слева, 0 по центру, 1 справа
-  , stemSig :: Sig
+  , stemCache :: Maybe String
+  -- ^ описание стема, если кэш включён: по нему считается ключ, см. 'cached'
   }
 
--- | Стем по центру с пустой спецификацией.
-stemOf :: String -> String -> Sig -> Stem
-stemOf name spec sig =
-  Stem {stemName = name, stemSpec = spec, stemPan = 0, stemSig = sig}
+-- | Стем по имени и сигналу: по центру, без кэша.
+--
+-- Сигнал обязан быть конечным: длина трека берётся из материала, поэтому
+-- заканчивает стем автор - окном ('gate') или огибающей. Рендер ничего не
+-- подрезает и края не гасит: если материал обрывается на незатухшей ноте,
+-- в файле будет щелчок. Забытое окно ловится потолком в 600 секунд, но
+-- ловится дорого, потому что до предела стем честно считается.
+--
+-- Без кэша значит, что стем считается на каждом прогоне. Это и есть
+-- безопасное поведение по умолчанию: забыть обновить спецификацию
+-- невозможно, потому что её нет. Кэш включают явно ('cached') там, где
+-- рендер долгий.
+stem :: String -> Sig -> Stem
+stem name sig = Stem {stemName = name, stemSig = sig, stemPan = 0, stemCache = Nothing}
 
--- | Пишет стем в @dir\/<имя>-<хэш>.wav@ и отдаёт путь. Если файл с таким
--- хэшем уже есть, рендер пропускается.
+-- | Включает кэш: пока строка не изменилась, файл переиспользуется.
 --
--- ВАЖНО: ключ кэша считается от имени, 'stemSpec', длины в сэмплах, частоты
--- и 'envSeed', а не от содержимого сигнала. Сериализовать 'Sig' нечем, это
--- функция (разд. 3), поэтому спецификацию пишет автор трека. Поправили
--- патч, но не поправили спецификацию - получите старый звук молча.
--- Сомневаетесь - удалите файл.
+-- ВАЖНО: строку пишет автор трека, и она обязана покрывать всё, что меняет
+-- звук стема, включая то, от чего он зависит через разделяемые сигналы
+-- (например сайдчейн от бочки). Сериализовать 'Sig' нечем, это функция
+-- (разд. 3). Поправили патч, но не поправили строку - получите старый звук
+-- молча. Сомневаетесь - снимите 'cached', тогда стем всегда свежий.
 --
--- Спецификация обязана покрывать и то, от чего стем зависит через
--- разделяемые сигналы: если стем качается сайдчейном от бочки, правка бочки
--- меняет и его звук, а хэш об этом не узнает.
+-- Длина в ключ не входит: её задаёт материал, и узнать её заранее нельзя, не
+-- отрендерив стем. Поэтому длину тоже описывает строка. В треке она обычно
+-- одна на всех, отсюда идиома @cached ("лид v1, " <> show trackSec <> " с")@:
+-- сократили трек для прослушивания - ключи поехали сами.
+cached :: String -> Stem -> Stem
+cached spec s = s {stemCache = Just spec}
+
+-- | Панорама в миксе: -1 слева, 0 по центру, 1 справа, равная мощность.
 --
--- 'envBlock' в ключ намеренно не входит: от размера блока результат не
--- зависит (это отдельно проверено тестами), и включать его значило бы
--- перерендеривать всё при настройке блока.
+-- Выход за диапазон это ошибка автора (@panned 35@ вместо @panned 0.35@), а
+-- не край образа: молчаливый зажим прятал бы опечатку.
+panned :: Double -> Stem -> Stem
+panned p s
+  | isNaN p || abs p > 1 = error ("hsig: панорама вне -1..1: " <> show p)
+  | otherwise = s {stemPan = p}
+
+-- | Стерео-стем как пара моно-стемов по краям образа.
 --
--- Режет по времени жёстко: если к этому моменту нота не успела затухнуть,
--- на конце будет щелчок. Гасить края это дело трека, библиотека не
--- подмешивает фейд молча.
+-- Каналы уже посчитаны (например 'orbit' или широким унисоном), поэтому
+-- панорама у них крайняя: при равной мощности -1 и 1 дают ровно (1, 0) и
+-- (0, 1), то есть ухо попадает в свой канал без ослабления. Считаются они
+-- параллельно, как и любые два стема.
+stereoStems :: String -> Stereo -> [Stem]
+stereoStems name (Stereo l r) =
+  [ panned (-1) (stem (name <> "L") l)
+  , panned 1 (stem (name <> "R") r)
+  ]
+
+-- | Пишет стем в каталог @dir@ и отдаёт путь к файлу. Без кэша это
+-- @dir\/<имя>.wav@ и рендер каждый прогон, с 'cached' - @dir\/<имя>-<хэш>.wav@,
+-- и готовый файл переиспользуется.
+--
+-- Ключ кэша считается от имени стема, спецификации, 'envRate' и 'envSeed'.
+-- Что обязана покрывать спецификация - см. 'cached'. 'envBlock' в ключ
+-- намеренно не входит: от размера блока результат не зависит (проверено
+-- тестами), иначе его настройка перерендеривала бы всё.
 --
 -- Стемы пишутся во float32: промежуточный носитель не должен добавлять
 -- шума квантования.
-renderStem :: Env -> Double -> FilePath -> Stem -> IO FilePath
-renderStem env secs dir stem = do
-  ready <- doesFileExist path
+renderStem :: Env -> FilePath -> Stem -> IO FilePath
+renderStem env dir s = do
+  ready <- maybe (pure False) (const (doesFileExist path)) (stemCache s)
   if ready
     then pure path
     else do
-      _ <- writeWav env Float32 path (takeSec secs (stemSig stem))
+      -- Пишем под временным именем и переименовываем только после проверки
+      -- длины: иначе отвергнутый стем успевал побывать на конечном пути, и
+      -- неудачное удаление (файл открыт плеером) оставляло бы его готовым
+      -- для кэша следующего прогона.
+      writeChecked env building (stemSig s) (tooLong env ("стем " <> stemName s))
+      renameFile building path
       pure path
   where
-    path = stemPath env secs dir stem
+    path = stemPath env dir s
+    building = path <> ".part"
 
--- | Путь стема: @<имя>-<сэмплов>-<хэш>.wav@. Имя и спецификация вместе
--- определяют файл, поэтому одно имя с разными спецификациями это разные
--- файлы, а не конфликт.
---
--- Длина стоит в имени, а не только внутри хэша, чтобы уборка могла отличить
--- устаревшую спецификацию от другой длины: иначе короткое превью и полный
--- прогон сносили бы кэш друг друга.
-stemPath :: Env -> Double -> FilePath -> Stem -> FilePath
-stemPath env secs dir stem =
-  dir </> (stemName stem <> "-" <> show (samplesOf env secs) <> "-" <> stemHash env secs stem <> ".wav")
+-- | Пишет сигнал во float32 с потолком длины: длиннее 'envMaxSec' считается
+-- забытым окном. Файл после отказа не остаётся.
+writeChecked :: Env -> FilePath -> Sig -> String -> IO ()
+writeChecked env path sig complaint = do
+  -- Берём на сэмпл больше предела: иначе takeSec обрезал бы ровно по нему и
+  -- честный стем ровно в предел был бы неотличим от бесконечного.
+  report <- writeWav env Float32 path (takeSec (envMaxSec env + 1 / envRate env) sig)
+  when (clipFrames report > limit) $ do
+    removeQuietly path
+    ioError (userError complaint)
+  where
+    limit = round (envMaxSec env * envRate env)
 
-samplesOf :: Env -> Double -> Int
-samplesOf env secs = round (secs * envRate env)
+tooLong :: Env -> String -> String
+tooLong env what =
+  "hsig: "
+    <> what
+    <> " длиннее "
+    <> show (envMaxSec env)
+    <> " с, то есть похож на бесконечный. Длина трека берётся из материала,"
+    <> " поэтому кончаться он обязан сам: ограничьте его окном (gate) или"
+    <> " огибающей. Трек честно длиннее - поднимите envMaxSec."
+
+-- | Путь стема. Без кэша это @<имя>.wav@, и файл перезаписывается каждый
+-- прогон. С кэшем в имя входит хэш спецификации, поэтому одно имя с разными
+-- спецификациями это разные файлы, а не конфликт.
+stemPath :: Env -> FilePath -> Stem -> FilePath
+stemPath env dir s =
+  dir </> case stemCache s of
+    Nothing -> stemName s <> ".wav"
+    Just spec -> stemName s <> "-" <> stemHash env spec s <> ".wav"
 
 -- | Компоненты сворачиваются цепочкой, а не складываются: у суммы любая
--- компенсирующая пара правок (seed на единицу вверх, длина на сэмпл вниз)
--- давала бы то же имя файла. Длина берётся в сэмплах, ровно как её понимает
--- takeSec: округление до миллисекунд склеивало бы разные длины в один файл.
-stemHash :: Env -> Double -> Stem -> String
-stemHash env secs stem = pad (showHex (foldl step 7 parts `mod` 0x100000000) "")
+-- компенсирующая пара правок (seed на единицу вверх, частота на герц вниз)
+-- давала бы то же имя файла.
+stemHash :: Env -> String -> Stem -> String
+stemHash env spec s = pad (showHex (foldl step 7 parts `mod` 0x100000000) "")
   where
     parts =
-      map fromEnum (stemName stem <> "\0" <> stemSpec stem)
-        <> [round (secs * envRate env), round (envRate env), envSeed env]
+      map fromEnum (stemName s <> "\0" <> spec)
+        <> [round (envRate env), envSeed env]
     step acc x = fromIntegral (wordAt (acc + x) 1)
-    pad s = replicate (8 - length s) '0' <> s
+    pad t = replicate (8 - length t) '0' <> t
 
--- | Складывает стемы из файлов. Читает их целиком, поэтому возвращает
--- сигнал в IO, а не притворяется чистым через unsafePerformIO.
+-- | Складывает стемы из файлов. Открывает их, поэтому отдаёт сигнал в IO, а
+-- не притворяется чистым через unsafePerformIO; блоки тянутся лениво (см.
+-- readStem).
 mixStems :: Env -> [FilePath] -> IO Sig
 mixStems env paths = do
   parts <- mapM (readStem env) paths
@@ -268,8 +330,12 @@ inParallel actions = do
 
 -- | Рендерит стемы на диск рядом с треком, сводит их по панораме и пишет
 -- стерео-мастер в 16 бит.
-renderTrack :: Env -> Double -> FilePath -> [Stem] -> IO FilePath
-renderTrack env secs path = renderTrackWith env secs path id
+--
+-- Длина берётся из материала: каждый стем считается до своего конца, мастер
+-- выходит длиной с самый длинный. Отдельного аргумента длины нет намеренно -
+-- он дублировал бы окно, которым стем и так ограничен.
+renderTrack :: Env -> FilePath -> [Stem] -> IO FilePath
+renderTrack env path = renderTrackWith env path id
 
 -- | То же, но сведённый мастер перед записью проходит через обработку:
 -- место под насыщение, общий трим или что угодно поперёк каналов.
@@ -279,45 +345,75 @@ renderTrack env secs path = renderTrackWith env secs path id
 --
 -- Убирает из каталога устаревшие стемы: при правке спецификации меняется
 -- хэш, и без уборки каталог зарастает файлами прошлых версий. Удаляются
--- только файлы вида @<имя>-<хэш>.wav@ для имён из этого трека и только с
--- чужим хэшем; всё остальное в каталоге не трогается. Отсюда правило: два
--- трека с общими именами стемов в одном каталоге будут вычищать кэш друг
--- друга, разводите их по каталогам.
-renderTrackWith :: Env -> Double -> FilePath -> (Stereo -> Stereo) -> [Stem] -> IO FilePath
-renderTrackWith env secs path master stems = do
+-- только файлы вида @<имя>-<хэш>.wav@ для имён из этого трека, и только те,
+-- что старше нескольких последних версий (см. 'keepVersions'); всё остальное
+-- в каталоге не трогается. Отсюда два правила: держите треки с общими
+-- именами стемов в разных каталогах (иначе вычистят кэш друг друга) и не
+-- запускайте два рендера в один каталог одновременно - стемы без кэша
+-- называются по имени, и оба прогона пишут в один файл.
+renderTrackWith :: Env -> FilePath -> (Stereo -> Stereo) -> [Stem] -> IO FilePath
+renderTrackWith env path master stems = do
   -- Совпали имя и спецификация, а сигналы разные: оба стема писали бы в один
   -- файл одновременно, и в миксе оказался бы один из них дважды. От сигнала
-  -- путь зависеть не может, поэтому ловим здесь.
-  case duplicates (map (stemPath env secs dir) stems) of
+  -- путь зависеть не может, поэтому ловим здесь. Путь мастера тоже в списке:
+  -- стем с таким же путём затирался бы мастером каждый прогон.
+  case duplicates (path : map (stemPath env dir) stems) of
     [] -> pure ()
     dups ->
       ioError . userError $
         "hsig: в один файл пишут несколько стемов: "
-          <> unwords [stemName s | s <- stems, stemPath env secs dir s `elem` dups]
-  paths <- inParallel (map (renderStem env secs dir) stems)
-  sweepStale dir (samplesOf env secs) (map stemName stems) paths
+          <> unwords ([takeFileName path | path `elem` dups] <> [stemName s | s <- stems, stemPath env dir s `elem` dups])
+  paths <- inParallel (map (renderStem env dir) stems)
+  sweepStale dir [stemName s | s <- stems, isJust (stemCache s)] paths
   Stereo l r <- master <$> mixStemsStereo env (zip (map stemPan stems) paths)
-  _ <- writeWavStereo env Bits16 path (takeSec secs l) (takeSec secs r)
+  -- Сумма по PadZero уже длиной с самый длинный стем, но обработка мастера
+  -- может её продлить (реверб-хвост) или сделать бесконечной (+ constant),
+  -- поэтому тот же потолок, что у стема. Пишем под временным именем: иначе
+  -- отвергнутый мастер побывал бы на конечном пути.
+  report <- writeWavStereo env Bits16 building (takeSec cap l) (takeSec cap r)
+  when (clipFrames report > limit) $ do
+    removeQuietly building
+    ioError (userError (tooLong env "мастер"))
+  -- Пустой мастер это почти всегда забытое окно или нулевая длина трека:
+  -- молча отдать валидный файл на ноль сэмплов хуже, чем сказать.
+  when (clipFrames report == 0 && not (null stems)) $
+    hPutStrLn stderr ("hsig: " <> path <> ": мастер пустой, ноль кадров")
+  renameFile building path
   pure path
   where
     dir = takeDirectory path
+    building = path <> ".part"
+    cap = envMaxSec env + 1 / envRate env
+    limit = round (envMaxSec env * envRate env)
 
--- | Удаляет стемы с устаревшими хэшами и докладывает об этом в stderr:
+-- | Сколько версий каждого кэшируемого стема остаётся в каталоге.
+--
+-- Не одна: рабочий цикл это метание между вариантами (превью на восемь
+-- секунд и полный прогон, две версии патча), а спецификация у них разная,
+-- значит разный и хэш. Уборка "всё, кроме текущего" заставляла бы считать
+-- дорогой стем заново при каждом переключении, то есть отменяла бы кэш ровно
+-- там, где он нужен. Четыре это две пары вариантов.
+keepVersions :: Int
+keepVersions = 4
+
+-- | Удаляет старые версии кэш-файлов и докладывает об этом в stderr:
 -- разрушительная операция не должна быть молчаливой.
 --
--- Имя обязано совпасть с @<имя>-<сэмплов>-<хэш>.wav@ при том же числе
--- сэмплов, иначе файл не наш и остаётся на месте. Файлы старого вида без
--- длины сносятся всегда: их могла записать только прежняя версия.
+-- Имя обязано совпасть с @<имя>-<хэш>.wav@ для имени из этого трека, иначе
+-- файл не наш и остаётся на месте. Оговорка: чужой файл, случайно попавший в
+-- этот шаблон (@mix-20260730.wav@ рядом со стемом @mix@), от уборки не
+-- отличим - держите экспорты не в каталоге стемов. Стемы без кэша сюда не
+-- попадают: они пишутся под своим именем и перезаписываются сами.
 --
 -- Отказы уборки не валят рендер: удалять чужое или несуществующее это не
 -- причина терять уже посчитанные стемы. Та же политика, что у dropQuietly
--- при записи.
-sweepStale :: FilePath -> Int -> [String] -> [FilePath] -> IO ()
-sweepStale dir wanted names keep
+-- при записи. Файл, который не удалось опросить по времени, не удаляется.
+sweepStale :: FilePath -> [String] -> [FilePath] -> IO ()
+sweepStale dir names keep
   | null names = pure ()
   | otherwise = do
       files <- listDirectory dir `catch` emptyOnError
-      let stale = filter ours files
+      stale <- concat <$> mapM (staleFor files) names
       mapM_ (removeQuietly . (dir </>)) stale
       unless (null stale) $
         hPutStrLn stderr ("hsig: убрано устаревших стемов " <> show (length stale) <> ": " <> unwords stale)
@@ -325,9 +421,18 @@ sweepStale dir wanted names keep
     emptyOnError :: IOException -> IO [FilePath]
     emptyOnError _ = pure []
     current = map takeFileName keep
-    ours f = f `notElem` current && any (\n -> mine n f || legacy n f) names
-    mine n = hashed (n <> "-" <> show wanted <> "-")
-    legacy n = hashed (n <> "-")
+    -- Свежий стем этого прогона уже занимает одно место из keepVersions.
+    staleFor files name = do
+      dated <- mapM withTime (filter mine files)
+      pure (map fst (drop (keepVersions - 1) (sortOn (Down . snd) [(f, t) | (f, Just t) <- dated])))
+      where
+        mine f = f `notElem` current && hashed (name <> "-") f
+    -- Файл, который не удалось опросить, к удалению не предлагается.
+    withTime f = do
+      r <- try (getModificationTime (dir </> f))
+      pure (f, either ignoreTime Just r)
+    ignoreTime :: IOException -> Maybe a
+    ignoreTime _ = Nothing
     hashed pre f = case stripPrefix pre f of
       Just rest ->
         length rest == 12

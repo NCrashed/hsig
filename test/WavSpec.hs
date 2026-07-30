@@ -3,23 +3,22 @@
 -- | Запись WAV: заголовок, квантование, дизер, клиппинг, детерминизм.
 module WavSpec (tests) where
 
-import Control.Exception (ErrorCall, IOException, finally, try)
+import Control.Exception (ErrorCall, IOException, try)
 import Data.Bits (shiftL, (.|.))
 import Data.ByteString qualified as BS
 import Data.Int (Int16)
 import Data.List (isInfixOf)
 import Data.Vector.Unboxed qualified as U
 import GHC.Float (castWord32ToFloat, double2Float)
-import GHC.IO.Handle (hDuplicate, hDuplicateTo)
 import Sound.Sig.Core
 import Sound.Sig.IO
 import Sound.Sig.Osc (noise)
 import System.Directory (doesFileExist)
 import System.FilePath ((</>))
-import System.IO (hClose, hFlush, readFile', stderr)
-import System.IO.Temp (withSystemTempDirectory, withSystemTempFile)
+import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty
 import Test.Tasty.HUnit
+import TestIO (captureStderr)
 
 tests :: TestTree
 tests = testGroup "IO" [headers, stereo, roundTrip, reading, clipping, determinism, misc]
@@ -78,20 +77,6 @@ s24 bs o
 
 f32 :: BS.ByteString -> Int -> Float
 f32 bs o = castWord32ToFloat (fromIntegral (u32 bs o))
-
--- | Перехватывает stderr на время действия.
-captureStderr :: IO a -> IO (a, String)
-captureStderr act = withSystemTempFile "hsig-stderr" $ \path h -> do
-  saved <- hDuplicate stderr
-  hDuplicateTo h stderr
-  r <-
-    act `finally` do
-      hFlush stderr
-      hDuplicateTo saved stderr
-      hClose saved
-  hClose h
-  msg <- readFile' path
-  pure (r, msg)
 
 -- | Тестовый Env с низкой частотой: удобно считать сэмплы руками.
 slowEnv :: Env
@@ -443,6 +428,23 @@ clipping =
           clipCount rep @?= 0
           clipFirst rep @?= Nothing
           clipPeak rep @?= 0.5
+    , -- clipFrames это кадры, а не сэмплы: по нему рендер стемов отличает
+      -- забытое окно от честной длины, и на стерео ошибка вдвое сдвинула бы
+      -- потолок.
+      testCase "clipFrames считает кадры, а не сэмплы" $
+        withSystemTempDirectory "hsig-test" $ \dir -> do
+          mono <- writeWav slowEnv Bits16 (dir </> "m.wav") (takeSec 2.5 (constant 0.5))
+          clipFrames mono @?= 10
+          st <-
+            writeWavStereo slowEnv Bits16 (dir </> "s.wav") (takeSec 2.5 (constant 0.5)) (takeSec 2.5 (constant 0.25))
+          clipFrames st @?= 10
+          -- Каналы разной длины: короткий дотягивается нулями, кадров по
+          -- длинному.
+          uneven <-
+            writeWavStereo slowEnv Bits16 (dir </> "u.wav") (takeSec 2.5 (constant 0.5)) (takeSec 1 (constant 0.25))
+          clipFrames uneven @?= 10
+          empty <- writeWav slowEnv Bits16 (dir </> "e.wav") (fromSamples [])
+          clipFrames empty @?= 0
     , testCase "выход за диапазон считается и датируется" $
         withWav slowEnv Bits16 (fromSamples [0.5, 2, -3, 0.1]) $ \bs rep -> do
           clipCount rep @?= 2

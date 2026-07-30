@@ -4,7 +4,7 @@
 module MiniSpec (tests) where
 
 import Control.Exception (ErrorCall, evaluate, try)
-import Data.List (sortOn)
+import Data.List (isInfixOf, sortOn)
 import Data.Ratio ((%))
 import Data.String (fromString)
 import Sound.Sig.Score
@@ -16,6 +16,7 @@ tests =
   testGroup
     "Mini"
     [ atomTests
+    , noteTests
     , groupTests
     , errorTests
     ]
@@ -104,6 +105,56 @@ atomTests =
         assertBool "пусто" (not (null plain))
         times "bd*16?, sn cp" @?= plain
         times "[bd*16?]" @?= plain
+    ]
+
+noteTests :: TestTree
+noteTests =
+  testGroup
+    "ноты"
+    [ testCase "имя ноты даёт частоту" $ do
+        noteHzOf "a4" @?= Just 440
+        noteHzOf "a1" @?= Just 55
+        assertBool "c4" (maybe False (\f -> abs (f - 261.6256) < 1e-3) (noteHzOf "c4"))
+        -- Регистр не важен, диез и бемоль сходятся на одной ноте.
+        noteHzOf "A4" @?= Just 440
+        assertBool "cs4" (noteHzOf "c#4" == noteHzOf "db4")
+        assertBool "cs4 = s" (noteHzOf "c#4" == noteHzOf "cs4")
+        assertBool "c-1" (maybe False (\f -> abs (f - 8.1758) < 1e-3) (noteHzOf "c-1"))
+    , -- Ради этого различения набор барабанов и возможен: имя барабана не
+      -- должно случайно оказаться нотой.
+      testCase "имена барабанов нотами не считаются" $
+        mapM_ (\w -> noteHzOf w @?= Nothing) ["bd", "cp", "sn", "hh", "b", "e", "x", ""]
+    , testCase "паттерн нот читается строкой" $ do
+        let freqs src = map (noteFreq . eventValue) (q (fromString src :: Pattern Note) (0, 1))
+            labels src = map (noteLabel . eventValue) (q (fromString src :: Pattern Note) (0, 1))
+        assertBool "a1 c2" $
+          and (zipWith (\a b -> abs (a - b) < 1e-3) (freqs "a1 c2") [55, 65.4064])
+        labels "a1 c2" @?= ["a1", "c2"]
+        -- Числа берутся как частоты в герцах, как в numbers.
+        freqs "55 73.42" @?= [55, 73.42]
+        -- Барабаны едут метками, частота остаётся нулевой.
+        labels "bd*4" @?= replicate 4 "bd"
+        freqs "bd*4" @?= replicate 4 0
+    , -- Хвост после октавы это не нота: иначе reads принял бы "a4x" за a4 и
+      -- опечатка в мелодии звучала бы верной нотой.
+      testCase "мусор после октавы это не нота" $ do
+        noteHzOf "a4x" @?= Nothing
+        noteHzOf "c#4y" @?= Nothing
+        noteHzOf "a" @?= Nothing
+    , -- Единственное двусмысленное место таблицы: b это и нота си, и бемоль.
+      testCase "bb4 это a#4" $ noteHzOf "bb4" @?= noteHzOf "a#4"
+    , -- В параметрах патча паттерна нет, и подставить туда тишину вместо
+      -- ноты значит потерять голос молча.
+      testCase "noteHz падает на не-ноте" $ do
+        noteHz "a4" @?= 440
+        mapM_
+          ( \w -> do
+              r <- try (evaluate (noteHz w))
+              case r :: Either ErrorCall Double of
+                Left err -> assertBool (show err) (w `isInfixOf` show err)
+                Right v -> assertFailure (w <> " дал " <> show v)
+          )
+          ["bd", "h4", "a4x", "a"]
     ]
 
 groupTests :: TestTree

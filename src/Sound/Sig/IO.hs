@@ -42,6 +42,8 @@ data ClipReport = ClipReport
   -- ^ максимум модуля сигнала
   , clipBad :: !Int
   -- ^ сэмплов, оказавшихся NaN или бесконечностью
+  , clipFrames :: !Int
+  -- ^ сколько кадров записано: по нему видно длину, не читая файл
   }
   deriving (Eq, Show)
 
@@ -71,11 +73,13 @@ writeWavStereo env depth path left right =
 -- бы в микс тишину.
 writeChannels :: Env -> BitDepth -> FilePath -> Chunks -> Int -> IO ClipReport
 writeChannels env depth path chunks channels = do
-  when (rate < 1) $ ioError (userError (badRate env))
+  -- Нецелая частота попала бы в заголовок округлённой, и чтение стема
+  -- (разд. 8) отвергло бы файл по несовпадению уже после всей записи.
+  when (rate < 1 || fromIntegral rate /= envRate env) $ ioError (userError (badRate env))
   createDirectoryIfMissing True (takeDirectory path)
-  stats <- writeTo tmp `onException` dropQuietly tmp
+  (frames, stats) <- writeTo tmp `onException` dropQuietly tmp
   renameFile tmp path
-  let report = toReport env channels stats
+  let report = toReport env channels frames stats
   when (clipCount report > 0) $ hPutStrLn stderr (clipMessage path report)
   when (clipBad report > 0) $ hPutStrLn stderr (badMessage path report)
   pure report
@@ -91,7 +95,7 @@ writeChannels env depth path chunks channels = do
       when (odd (written * bytes)) $ hPutBuilder h (word8 0)
       hSeek h AbsoluteSeek 0
       hPutBuilder h (headerFor depth channels rate frames)
-      pure stats
+      pure (frames, stats)
     writeAll h !n !st cs = case cs of
       [] -> pure (n, st)
       c : rest
@@ -117,7 +121,7 @@ maxDataBytes :: Int
 maxDataBytes = 0xFFFFFFFF - 64
 
 badRate :: Env -> String
-badRate env = "hsig: envRate должен быть положительным, задано " <> show (envRate env)
+badRate env = "hsig: envRate должен быть целым положительным, задано " <> show (envRate env)
 
 tooBig :: FilePath -> String
 tooBig path =
@@ -326,13 +330,14 @@ emptyStats :: Stats
 emptyStats = Stats {stCount = 0, stFirst = Nothing, stPeak = 0, stBad = 0}
 
 -- | Индексы внутри записи чередованные, поэтому время считается по кадрам.
-toReport :: Env -> Int -> Stats -> ClipReport
-toReport env channels st =
+toReport :: Env -> Int -> Int -> Stats -> ClipReport
+toReport env channels frames st =
   ClipReport
     { clipCount = stCount st
     , clipFirst = (\i -> fromIntegral (i `div` channels) / envRate env) <$> stFirst st
     , clipPeak = stPeak st
     , clipBad = stBad st
+    , clipFrames = frames
     }
 
 badMessage :: FilePath -> ClipReport -> String
