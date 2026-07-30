@@ -39,6 +39,8 @@ nix develop --command tools/book-audio.sh   # docs/book/audio/*.mp3
 13. [Драм-н-бэйс](13-dnb.md) - 174 удара, разломанный бит, Reese и саб
 14. [Три тембра](14-timbres.md) - инхармонический колокол, резонансное
     булькание и слоёный грязный бас
+15. [Комбинаторы паттернов](15-patterns.md) - евклид, эхо, ply, sometimesBy,
+    struct
 
 ## Справка
 

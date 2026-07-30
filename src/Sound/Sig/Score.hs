@@ -31,6 +31,25 @@ module Sound.Sig.Score
   , rev
   , degradeBy
   , degradeSeeded
+  , undegradeBy
+  , undegradeSeeded
+  , sometimesBy
+  , sometimes
+  , often
+  , rarely
+  , almostNever
+  , almostAlways
+  , superimpose
+  , off
+  , ply
+  , iter
+  , palindrome
+  , whenmod
+  , euclid
+  , euclidInv
+  , struct
+  , segment
+  , appLeft
 
     -- * Мини-нотация
   , parsePat
@@ -211,6 +230,144 @@ rotL t p = withResultTime (subtract t) (withQueryTime (+ t) p)
 rotR :: Time -> Pattern a -> Pattern a
 rotR t = rotL (negate t)
 
+-- | Аппликация со структурой левого (в Tidal это @\<*@).
+--
+-- Обычный '<*>' пересекает структуру обоих, поэтому частый правый дробит
+-- редкий левый. Здесь части и целые берутся у левого, а у правого только
+-- спрашивается значение на отрезке левого события. На этом стоят 'struct'
+-- и 'segment': ритм от одного, значения от другого.
+appLeft :: Pattern (a -> b) -> Pattern a -> Pattern b
+appLeft pf px = Pattern $ \a ->
+  [ Event (eventWhole ef) part (eventValue ef (eventValue ex))
+  | ef <- queryArc pf a
+  , ex <- queryArc px (fromMaybe (eventPart ef) (eventWhole ef))
+  , Just part <- [subArc (eventPart ef) (eventPart ex)]
+  ]
+
+-- | Выбрасывает события без значения.
+filterJust :: Pattern (Maybe a) -> Pattern a
+filterJust p = Pattern $ \a -> [e {eventValue = v} | e <- queryArc p a, Just v <- [eventValue e]]
+
+-- | Ритм от булева паттерна, значения от второго: @struct "t f t t" p@.
+struct :: Pattern Bool -> Pattern a -> Pattern a
+struct bp vp = filterJust (appLeft ((\b v -> if b then Just v else Nothing) <$> bp) vp)
+
+-- | Нарезает цикл на n равных долей и берёт значение на каждой.
+segment :: Time -> Pattern a -> Pattern a
+segment n = appLeft (fast n (pure id))
+
+-- | Евклидов ритм: k ударов, максимально равномерно размазанных по n шагам.
+--
+-- Тот самый (3,8) это трезильо, (5,8) кубинская синкопа, (2,5) хабанера.
+-- Рисунок считается алгоритмом Бьорклунда, как в Tidal.
+euclid :: Int -> Int -> Pattern a -> Pattern a
+euclid k n = struct (listToPat (bjorklund k n))
+
+-- | Дополнение 'euclid': удары там, где у него паузы.
+euclidInv :: Int -> Int -> Pattern a -> Pattern a
+euclidInv k n = struct (listToPat (map not (bjorklund k n)))
+
+-- | Алгоритм Бьорклунда: k единиц и n-k нулей, разложенные максимально
+-- равномерно. Реализация через слияние остатка, как в оригинальной статье.
+bjorklund :: Int -> Int -> [Bool]
+bjorklund k n
+  | n <= 0 = []
+  | k <= 0 = replicate n False
+  | k >= n = replicate n True
+  | otherwise = concat (go (replicate k [True]) (replicate (n - k) [False]))
+  where
+    go as bs
+      | length bs <= 1 = as <> bs
+      | length as <= length bs =
+          let (paired, rest) = splitAt (length as) bs
+           in go (zipWith (<>) as paired) rest
+      | otherwise =
+          let (paired, rest) = splitAt (length bs) as
+           in go (zipWith (<>) paired bs) rest
+
+-- | Накладывает обработанную копию поверх исходного паттерна.
+superimpose :: (Pattern a -> Pattern a) -> Pattern a -> Pattern a
+superimpose f p = stack [p, f p]
+
+-- | Накладывает копию, сдвинутую вперёд на долю цикла и обработанную:
+-- отсюда берутся эхо, задержанные октавы и переклички.
+off :: Time -> (Pattern a -> Pattern a) -> Pattern a -> Pattern a
+off t f = superimpose (f . rotR t)
+
+-- | Дополнение 'degradeBy': оставляет ровно те события, которые тот
+-- выбрасывает. Вместе они дают исходный паттерн.
+undegradeBy :: Double -> Pattern a -> Pattern a
+undegradeBy = undegradeSeeded 0
+
+-- | То же со своим потоком случайности.
+undegradeSeeded :: Int -> Double -> Pattern a -> Pattern a
+undegradeSeeded seed amount p = Pattern $ \a -> filter (not . keeps seed amount) (queryArc p a)
+
+-- | Обрабатывает случайную долю событий, оставляя остальные нетронутыми.
+--
+-- Доля та же, что выбрасывает 'degradeBy' с тем же аргументом, поэтому
+-- событий не теряется и не прибавляется.
+sometimesBy :: Double -> (Pattern a -> Pattern a) -> Pattern a -> Pattern a
+sometimesBy amount f p = stack [degradeBy amount p, f (undegradeBy amount p)]
+
+-- | Половина событий.
+sometimes :: (Pattern a -> Pattern a) -> Pattern a -> Pattern a
+sometimes = sometimesBy 0.5
+
+-- | Три четверти событий.
+often :: (Pattern a -> Pattern a) -> Pattern a -> Pattern a
+often = sometimesBy 0.75
+
+-- | Четверть событий.
+rarely :: (Pattern a -> Pattern a) -> Pattern a -> Pattern a
+rarely = sometimesBy 0.25
+
+-- | Каждое десятое событие.
+almostNever :: (Pattern a -> Pattern a) -> Pattern a -> Pattern a
+almostNever = sometimesBy 0.1
+
+-- | Девять из десяти.
+almostAlways :: (Pattern a -> Pattern a) -> Pattern a -> Pattern a
+almostAlways = sometimesBy 0.9
+
+-- | Повторяет каждое событие n раз внутри его собственного отрезка.
+ply :: Time -> Pattern a -> Pattern a
+ply n p = Pattern $ \a -> concatMap (expand a) (queryArc p a)
+  where
+    expand a e = case eventWhole e of
+      Nothing -> [e]
+      Just (Arc ws we) ->
+        [ Event (Just (Arc s t)) part (eventValue e)
+        | i <- [0 .. ceiling (max 1 n) - 1 :: Int]
+        , let s = ws + fromIntegral i * step
+        , let t = s + step
+        , s < we
+        , Just part <- [subArc (Arc s t) a]
+        ]
+        where
+          step = (we - ws) / max 1 n
+
+-- | Сдвигает начало паттерна на 1\/n цикла с каждым следующим циклом.
+iter :: Int -> Pattern a -> Pattern a
+iter n p
+  | n <= 0 = p
+  | otherwise = splitQueries $ Pattern $ \a ->
+      let cyc = floor (arcStart a) `mod` n
+       in queryArc (rotL (fromIntegral cyc % fromIntegral n) p) a
+
+-- | Каждый второй цикл играется задом наперёд.
+palindrome :: Pattern a -> Pattern a
+palindrome p = cat [p, rev p]
+
+-- | Применяет функцию, когда номер цикла по модулю n не меньше k.
+whenmod :: Int -> Int -> (Pattern a -> Pattern a) -> Pattern a -> Pattern a
+whenmod n k f p
+  | n <= 0 = p
+  | otherwise = splitQueries $ Pattern $ \a ->
+      if floor (arcStart a) `mod` n >= k
+        then queryArc (f p) a
+        else queryArc p a
+
 -- | Применяет функцию на каждом n-м цикле, начиная с нулевого.
 every :: Int -> (Pattern a -> Pattern a) -> Pattern a -> Pattern a
 every n f p
@@ -249,10 +406,14 @@ degradeBy = degradeSeeded 0
 -- прореживания на одной сетке решают одинаково и слои пропадают в такт. В
 -- Tidal ровно так же, там парсер выдаёт каждому @?@ отдельный seed.
 degradeSeeded :: Int -> Double -> Pattern a -> Pattern a
-degradeSeeded seed amount p = Pattern $ \a -> filter keep (queryArc p a)
+degradeSeeded seed amount p = Pattern $ \a -> filter (keeps seed amount) (queryArc p a)
+
+-- | Общий предикат для degrade и его дополнения: случайное число одно и то
+-- же, поэтому вместе они дают ровно исходный паттерн.
+keeps :: Int -> Double -> Event a -> Bool
+keeps seed amount e = randomAt (fromMaybe (eventPart e) (eventWhole e)) >= amount
   where
-    keep e = randomAt (fromMaybe (eventPart e) (eventWhole e)) >= amount
-    randomAt (Arc s e) = doubleAt seed (hashTime ((s + e) / 2))
+    randomAt (Arc s t) = doubleAt seed (hashTime ((s + t) / 2))
     hashTime t = fromIntegral (numerator t) * 2654435761 + fromIntegral (denominator t)
 
 -- Мини-нотация --------------------------------------------------------------
