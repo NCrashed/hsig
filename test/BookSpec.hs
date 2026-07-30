@@ -8,7 +8,7 @@ module BookSpec (tests) where
 
 import Control.Monad (filterM, forM)
 import Data.List (isPrefixOf, isSuffixOf, sort, stripPrefix)
-import Data.Maybe (listToMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import System.Directory (doesFileExist, listDirectory)
 import System.FilePath ((</>))
 import Test.Tasty
@@ -27,7 +27,8 @@ tests =
     [ testCase "блоки глав совпадают с кодом" $ do
         chapters <- chapterFiles
         assertBool "глав нет" (not (null chapters))
-        problems <- concat <$> mapM checkChapter chapters
+        -- README тоже показывает код, и протухает он так же.
+        problems <- concat <$> mapM checkChapter ("README.md" : chapters)
         assertBool (unlines ("" : problems)) (null problems)
     , -- Помеченный блок это единственный способ показать код: без пометки он
       -- ничем не проверяется и живёт своей жизнью.
@@ -35,6 +36,16 @@ tests =
         chapters <- chapterFiles
         loose <- concat <$> mapM looseBlocks chapters
         assertBool (unlines ("непомеченные блоки haskell:" : loose)) (null loose)
+    , -- Термины объясняются в одном месте, главы на него ссылаются. Ссылка в
+      -- несуществующий якорь оставляет новичка без объяснения, а увидеть это
+      -- глазами нельзя: якорь молча не срабатывает.
+      testCase "ссылки в глоссарий ведут в существующие якоря" $ do
+        chapters <- chapterFiles
+        known <- idsOf <$> readFile (bookDir </> "glossary.md")
+        used <- concat <$> mapM (fmap anchorsOf . readFile) chapters
+        assertBool "главы не ссылаются на глоссарий" (not (null used))
+        let missing = [a | a <- used, a `notElem` known]
+        assertBool ("нет таких якорей: " <> unwords missing) (null missing)
     , -- Оглавление это вход в книгу: глава, на которую нет ссылки, не
       -- существует для читателя.
       testCase "оглавление и главы сходятся" $ do
@@ -56,18 +67,38 @@ chapterFiles = do
 takeName :: FilePath -> String
 takeName = reverse . takeWhile (/= '/') . reverse
 
+-- | Цели всех ссылок вида @[текст](цель)@.
+targetsOf :: String -> [String]
+targetsOf [] = []
+targetsOf ('(' : rest) = takeWhile (/= ')') rest : targetsOf (drop 1 (dropWhile (/= ')') rest))
+targetsOf (_ : rest) = targetsOf rest
+
 -- | Ссылки на главы из оглавления: @[текст](01-first-sound.md)@.
 linksOf :: String -> [String]
-linksOf src = [l | l <- targets src, ".md" `isSuffixOf` l, '/' `notElem` l, l /= "README.md"]
-  where
-    targets [] = []
-    targets ('(' : rest) = takeWhile (/= ')') rest : targets (drop 1 (dropWhile (/= ')') rest))
-    targets (_ : rest) = targets rest
+linksOf src = [l | l <- targetsOf src, ".md" `isSuffixOf` l, '/' `notElem` l, l /= "README.md"]
 
--- | Блок кода в главе.
+-- | Якоря, на которые главы ссылаются: @glossary.md#nyquist@.
+anchorsOf :: String -> [String]
+anchorsOf = mapMaybe (stripPrefix "glossary.md#") . targetsOf
+
+-- | Якоря, объявленные в глоссарии: @\<a id="nyquist"\>\</a\>@.
+idsOf :: String -> [String]
+idsOf src = case breakOn open src of
+  Nothing -> []
+  Just rest -> takeWhile (/= '"') rest : idsOf (dropWhile (/= '"') rest)
+  where
+    open = "<a id=\""
+    breakOn pat s
+      | pat `isPrefixOf` s = Just (drop (length pat) s)
+      | otherwise = case s of
+          [] -> Nothing
+          _ : more -> breakOn pat more
+
+-- | Блок кода в главе. Без символа сверяется весь файл целиком: так
+-- показывают маленькие примеры вроде tracks\/Minimal.hs.
 data Block = Block
   { blockFile :: FilePath
-  , blockSym :: String
+  , blockSym :: Maybe String
   , blockCode :: [String]
   , blockLine :: Int
   }
@@ -84,8 +115,8 @@ checkChapter chapter = do
         then pure [at b <> ": нет файла " <> path]
         else do
           src <- lines <$> readFile path
-          pure $ case defOf (blockSym b) src of
-            Nothing -> [at b <> ": в " <> path <> " нет " <> blockSym b]
+          pure $ case maybe (Just (trimEnd src)) (`defOf` src) (blockSym b) of
+            Nothing -> [at b <> ": в " <> path <> " нет " <> fromMaybe "?" (blockSym b)]
             Just def
               | def == trimEnd (blockCode b) -> []
               | otherwise ->
@@ -107,13 +138,13 @@ blocksOf src = go (zip [1 ..] (lines src))
 isFence :: String -> Bool
 isFence = isPrefixOf "```"
 
--- | @```haskell file=Book\/Ch01.hs sym=tone@
-marked :: String -> Maybe (FilePath, String)
+-- | @```haskell file=book\/Book\/Ch01.hs sym=tone@; без @sym@ сверяется весь
+-- файл.
+marked :: String -> Maybe (FilePath, Maybe String)
 marked l = do
   attrs <- words <$> stripPrefix "```haskell " l
   f <- listToMaybe (mapMaybe (stripPrefix "file=") attrs)
-  s <- listToMaybe (mapMaybe (stripPrefix "sym=") attrs)
-  pure (f, s)
+  pure (f, listToMaybe (mapMaybe (stripPrefix "sym=") attrs))
 
 -- | Непомеченные блоки haskell: их никто не проверяет.
 looseBlocks :: FilePath -> IO [String]

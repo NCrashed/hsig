@@ -15,7 +15,7 @@ flat = kickSig + bassSig
 ## Накачка
 
 Классическое решение: пригасить бас ровно на время удара. Это делает
-`sidechain управляющий глубина`:
+[`sidechain управляющий глубина`](glossary.md#sidechain):
 
 ```haskell file=book/Book/Ch07.hs sym=pumping
 pumping :: Sig
@@ -40,7 +40,7 @@ kickSig = share (play kit "bd*4" * gate 0.01 4)
 разд. 3 дизайна: любой сигнал, использованный в определении больше одного
 раза, оборачивается в `share`.
 
-## Компрессор
+## [Компрессор](glossary.md#compressor)
 
 `compress threshold ratio attack release` это обычный компрессор с мягким
 порогом:

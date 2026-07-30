@@ -83,6 +83,18 @@ executable demo
     , base
     , hsig
 
+executable minimal
+  import:         opts
+
+  -- Ритм это литерал паттерна (разд. 10 дизайна).
+  default-extensions: OverloadedStrings
+  hs-source-dirs:     tracks
+  main-is:            Minimal.hs
+  ghc-options:        -main-is Minimal -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+    , base
+    , hsig
+
 executable book
   import:         opts
 
