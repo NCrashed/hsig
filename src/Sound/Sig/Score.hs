@@ -57,6 +57,17 @@ module Sound.Sig.Score
   , inside
   , swingBy
   , playWhen
+  , zoom
+  , linger
+  , trunc
+  , chunk
+  , rot
+  , run
+  , someCyclesBy
+  , randcat
+  , wrandcat
+  , shuffle
+  , scramble
 
     -- * Мини-нотация
   , parsePat
@@ -72,6 +83,7 @@ module Sound.Sig.Score
   ) where
 
 import Data.Char (isDigit, isSpace, toLower)
+import Data.List (sortOn)
 import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Ratio (denominator, numerator, (%))
 import Data.String (IsString (..))
@@ -337,6 +349,133 @@ timecat tps
     total = sum (map fst tps)
     go _ [] = []
     go t ((w, p) : rest) = compressArc (Arc (t / total) ((t + w) / total)) p : go (t + w) rest
+
+-- | Применяет функцию к позиции внутри цикла, оставляя номер цикла на месте.
+mapCycle :: (Time -> Time) -> Arc -> Arc
+mapCycle f (Arc s e) = Arc (s0 + f (s - s0)) (s0 + f (e - s0))
+  where
+    s0 = sam s
+
+-- | Растягивает кусок цикла на весь цикл: @zoom (0, 0.25) p@ это первая
+-- четверть, занявшая всё время.
+zoom :: (Time, Time) -> Pattern a -> Pattern a
+zoom (s, e) p
+  | d <= 0 = silence
+  | otherwise =
+      splitQueries $
+        Pattern $ \a ->
+          map (mapEventArcs (mapCycle ((/ d) . subtract s))) (queryArc p (mapCycle ((+ s) . (* d)) a))
+  where
+    d = e - s
+
+mapEventArcs :: (Arc -> Arc) -> Event a -> Event a
+mapEventArcs f ev' = ev' {eventWhole = f <$> eventWhole ev', eventPart = f (eventPart ev')}
+
+-- | Зацикливает первую долю цикла на весь цикл: @linger 0.25@ повторяет
+-- первую четверть четыре раза. Типовой приём для заедающей пластинки.
+linger :: Time -> Pattern a -> Pattern a
+linger t p
+  | t <= 0 = silence
+  | otherwise = fast (recip t) (zoom (0, t) p)
+
+-- | Играет только начало цикла, остальное молчит.
+trunc :: Time -> Pattern a -> Pattern a
+trunc t p
+  | t <= 0 = silence
+  | t >= 1 = p
+  | otherwise = compressArc (Arc 0 t) (zoom (0, t) p)
+
+-- | Применяет функцию к своей n-й части цикла, и на каждом цикле к
+-- следующей: обработка ползёт по такту.
+chunk :: Int -> (Pattern a -> Pattern a) -> Pattern a -> Pattern a
+chunk n f p
+  | n <= 0 = p
+  | otherwise = cat [within (i % fromIntegral n, (i + 1) % fromIntegral n) f p | i <- [0 .. fromIntegral n - 1]]
+
+-- | Сдвигает значения по событиям, не трогая ритм: рисунок тот же, ноты
+-- переехали.
+rot :: Int -> Pattern a -> Pattern a
+rot n p = splitQueries (Pattern go)
+  where
+    go a = mapMaybe (clip a) (zipWith swap' events (drop k (cycle values)))
+      where
+        events = sortOn (arcStart . eventPart) (queryArc p (Arc (sam (arcStart a)) (sam (arcStart a) + 1)))
+        values = map eventValue events
+        k = if null values then 0 else n `mod` length values
+        swap' e v = e {eventValue = v}
+        clip q e = do
+          part <- subArc (eventPart e) q
+          pure e {eventPart = part}
+
+-- | Числа от нуля до n-1 внутри цикла.
+run :: Int -> Pattern Int
+run n = listToPat [0 .. n - 1]
+
+-- | Применяет функцию на случайной доле циклов. Случайность привязана к
+-- номеру цикла и своему seed, поэтому рендер остаётся воспроизводимым, а
+-- соседние комбинаторы не решают синхронно.
+someCyclesBy :: Double -> (Pattern a -> Pattern a) -> Pattern a -> Pattern a
+someCyclesBy amount f p = splitQueries $ Pattern $ \a ->
+  let c = floor (arcStart a) :: Int
+   in queryArc (if doubleAt 7 c < amount then f p else p) a
+
+-- | Случайный паттерн из списка на каждый цикл.
+randcat :: [Pattern a] -> Pattern a
+randcat [] = silence
+randcat ps = splitQueries $ Pattern $ \a ->
+  let c = floor (arcStart a) :: Int
+      i = floor (doubleAt 11 c * fromIntegral (length ps)) `mod` length ps
+   in queryArc (ps !! i) a
+
+-- | То же с весами: чем больше вес, тем чаще выпадает паттерн.
+wrandcat :: [(Double, Pattern a)] -> Pattern a
+wrandcat [] = silence
+wrandcat wps
+  | total <= 0 = silence
+  | otherwise = splitQueries $ Pattern $ \a ->
+      let c = floor (arcStart a) :: Int
+       in queryArc (pick (doubleAt 13 c * total) wps) a
+  where
+    total = sum (map fst wps)
+    pick _ [(_, p)] = p
+    pick x ((w, p) : rest)
+      | x < w = p
+      | otherwise = pick (x - w) rest
+    pick _ [] = silence
+
+-- | Делит цикл на n частей и играет их в случайном порядке, с повторами.
+scramble :: Int -> Pattern a -> Pattern a
+scramble n p
+  | n <= 0 = p
+  | otherwise = splitQueries $ Pattern $ \a ->
+      let c = floor (arcStart a) :: Int
+          pickAt j = floor (doubleAt 17 (c * n + j) * fromIntegral n) `mod` n
+       in queryArc (fastcat [slice n p (pickAt j) | j <- [0 .. n - 1]]) a
+
+-- | То же, но перестановкой: каждая часть звучит ровно один раз.
+shuffle :: Int -> Pattern a -> Pattern a
+shuffle n p
+  | n <= 0 = p
+  | otherwise = splitQueries $ Pattern $ \a ->
+      let c = floor (arcStart a) :: Int
+       in queryArc (fastcat [slice n p i | i <- permutation n c]) a
+
+-- | Кусок цикла номер i из n, растянутый на цикл.
+slice :: Int -> Pattern a -> Int -> Pattern a
+slice n p i = zoom (fromIntegral i % fromIntegral n, fromIntegral (i + 1) % fromIntegral n) p
+
+-- | Детерминированная перестановка n элементов по номеру цикла: тасование
+-- Фишера-Йетса на том же генераторе, что и весь шум.
+permutation :: Int -> Int -> [Int]
+permutation n c = go [0 .. n - 1] 0
+  where
+    go [] _ = []
+    go xs k = case splitAt i xs of
+      (before, x : after) -> x : go (before <> after) (k + 1)
+      -- Недостижимо: i всегда меньше длины, но пусть падение будет внятным.
+      _ -> bad "перестановка вышла за список"
+      where
+        i = floor (doubleAt 19 (c * n + k) * fromIntegral (length xs)) `mod` length xs
 
 -- | Оставляет события, начало которых проходит проверку.
 playWhen :: (Time -> Bool) -> Pattern a -> Pattern a

@@ -20,6 +20,8 @@ tests =
     , richTests
     , weightTests
     , swingTests
+    , sliceTests
+    , chanceTests
     ]
 
 -- | Событие: целый отрезок, видимая часть, значение.
@@ -342,4 +344,66 @@ swingTests =
       -- четверть отдельно, а не весь цикл.
       testCase "inside переворачивает по частям" $
         vals (inside 2 rev (listToPat "abcd")) (0, 1) @?= "badc"
+    ]
+
+sliceTests :: TestTree
+sliceTests =
+  testGroup
+    "нарезка цикла"
+    [ testCase "zoom растягивает кусок на цикл" $
+        vals (zoom (0, 1 / 2) (listToPat "abcd")) (0, 1) @?= "ab"
+    , testCase "zoom берёт свой кусок в каждом цикле" $
+        vals (zoom (1 / 2, 1) (listToPat "abcd")) (1, 2) @?= "cd"
+    , testCase "linger зацикливает начало" $
+        vals (linger (1 / 4) (listToPat "abcd")) (0, 1) @?= "aaaa"
+    , testCase "trunc обрывает цикл" $ do
+        vals (trunc (1 / 2) (listToPat "abcd")) (0, 1) @?= "ab"
+        onsets (trunc (1 / 2) (listToPat "abcd")) (0, 1) @?= [0, 1 / 4]
+    , -- chunk ползёт по такту: на каждом цикле обработана следующая доля.
+      -- Внутри окна видно уже удвоенный паттерн целиком, а не удвоенное
+      -- содержимое доли: within смотрит на f p, а не на кусок p.
+      testCase "chunk сдвигает обработку по циклам" $ do
+        vals (chunk 4 (fast 2) (listToPat "abcd")) (0, 1) @?= "abbcd"
+        vals (chunk 4 (fast 2) (listToPat "abcd")) (1, 2) @?= "acdcd"
+        vals (chunk 4 (fast 2) (listToPat "abcd")) (2, 3) @?= "ababd"
+    , -- rot двигает значения, а ритм оставляет.
+      testCase "rot переставляет значения по ритму" $ do
+        vals (rot 1 (listToPat "abcd")) (0, 1) @?= "bcda"
+        onsets (rot 1 (listToPat "abcd")) (0, 1) @?= onsets (listToPat "abcd") (0, 1)
+    , testCase "run даёт числа по порядку" $
+        vals (run 4) (0, 1) @?= [0, 1, 2, 3]
+    ]
+
+chanceTests :: TestTree
+chanceTests =
+  testGroup
+    "выбор по циклам"
+    [ testCase "someCyclesBy 1 применяет всегда" $
+        length (q (someCyclesBy 1 (fast 2) (pure 'a')) (0, 4)) @?= 8
+    , testCase "someCyclesBy 0 не применяет никогда" $
+        length (q (someCyclesBy 0 (fast 2) (pure 'a')) (0, 4)) @?= 4
+    , -- Доля циклов примерно та, что заказана, и она детерминирована.
+      testCase "someCyclesBy бьёт примерно по доле" $ do
+        let hits = length [c | c <- [0 .. 199], length (q (someCyclesBy 0.5 (fast 2) (pure 'a')) (c, c + 1)) == 2]
+        assertBool (show hits) (hits > 70 && hits < 130)
+    , testCase "randcat берёт по паттерну на цикл" $ do
+        let picks = concat [take 1 (vals (randcat [pure 'a', pure 'b']) (c, c + 1)) | c <- [0 .. 39]]
+        assertBool "всегда одно и то же" (elem 'a' picks && elem 'b' picks)
+        assertBool "по одному событию на цикл" (length picks == 40)
+    , testCase "wrandcat уважает веса" $ do
+        let picks = concat [take 1 (vals (wrandcat [(9, pure 'a'), (1, pure 'b')]) (c, c + 1)) | c <- [0 .. 99]]
+        assertBool (show (length (filter (== 'a') picks))) (length (filter (== 'a') picks) > 75)
+    , -- Перестановка: каждая часть звучит ровно один раз за цикл.
+      testCase "shuffle это перестановка" $ do
+        let got c = sort (vals (shuffle 4 (listToPat "abcd")) (c, c + 1))
+        mapM_ (\c -> got c @?= "abcd") [0 .. 20]
+    , testCase "shuffle меняет порядок по циклам" $ do
+        let order c = vals (shuffle 4 (listToPat "abcd")) (c, c + 1)
+        assertBool "порядок не меняется" (length (nub [order c | c <- [0 .. 20]]) > 3)
+    , -- scramble с повторами: значения из того же набора, но перестановкой
+      -- быть не обязано.
+      testCase "scramble берёт части с повторами" $ do
+        let got c = vals (scramble 4 (listToPat "abcd")) (c, c + 1)
+        mapM_ (\c -> assertBool (got c) (all (`elem` "abcd") (got c) && length (got c) == 4)) [0 .. 20]
+        assertBool "нет повторов вовсе" (any (\c -> length (nub (got c)) < 4) [0 .. 40])
     ]

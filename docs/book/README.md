@@ -42,6 +42,7 @@ nix develop --command tools/book-audio.sh   # docs/book/audio/*.mp3
 15. [Комбинаторы паттернов](15-patterns.md) - евклид, эхо, ply, sometimesBy,
     struct, синтаксис строк
 16. [Даунтемпо](16-downtempo.md) - свинг, виниловый треск, тёплые тембры
+17. [IDM и глитч](17-idm.md) - нарезка, заикание, перестановка кусков
 
 ## Справка
 

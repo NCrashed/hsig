@@ -557,9 +557,10 @@ main = renderTrackWith defaultEnv "out/track.wav" master track >>= putStrLn
    в строке, полиметр `{a b, c d e}%n`, `.` как быстрая группировка,
    диапазоны `0 .. 3`. Осталось: аккорды в строке и паттерны в аргументах
    евклида.
-3. Время и выбор: сделаны `within`, `inside`, `swingBy` и `playWhen` (свинг
-   понадобился даунтемпо, глава 16). Осталось: `linger`, `trunc`, `chunk`,
-   `rot`, `run`, `someCyclesBy`, `randcat`, `wchoose`, `shuffle`, `scramble`.
+3. Время и выбор (сделано): `within`, `inside`, `swingBy`, `playWhen`, `zoom`,
+   `linger`, `trunc`, `chunk`, `rot`, `run`, `someCyclesBy`, `randcat`,
+   `wrandcat`, `shuffle`, `scramble`. Нарезка и выбор по циклам пришли из
+   нужд даунтемпо (глава 16) и IDM (глава 17).
 4. Высоты: лады (`scale`), арпеджиатор (`arp`), разбор аккордов в строке.
 5. Паттерны параметров. В Tidal параметр патча патчится так же, как ноты
    (`# cutoff "400 800"`). У нас параметры это `Sig`, поэтому нужен мост
