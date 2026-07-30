@@ -132,8 +132,8 @@ showComp (Comp t r a rl) = intercalate "/" (map show [t, r, a, rl])
 sixteenBars :: [Stem]
 sixteenBars =
   [ stemOf "kick" kickSpec (kickSig * gate)
-  , stemOf "bass" bassSpec (duck (compWith bassComp (play bassInst bassPat)) * gate)
-  , (stemOf "hat" hatSpec (duck (play hatInst hatPat) * gate)) {stemPan = 0.35}
+  , stemOf "bass" bassSpec (duck (compWith bassComp (play bassInst bassPat)) * gate * constant bassLevel)
+  , (stemOf "hat" hatSpec (duck (play hatInst hatPat) * gate * constant hatLevel)) {stemPan = 0.35}
   , -- Лид стерео: стек унисона разведён по панораме, поэтому каналы пишутся
     -- двумя стемами и ставятся по краям. Считаются они параллельно, так что
     -- двойная цена ноты в стену времени не превращается.
@@ -145,8 +145,14 @@ sixteenBars =
     -- полную шкалу, а мастер-лимитера у renderTrack нет. Панорама по закону
     -- равной мощности отдаёт каналу 1/sqrt 2, отсюда и запас против моно.
     level = 0.9 :: Double
-    kickLevel = 0.8 :: Double
-    leadLevel = 0.5 :: Double
+    -- Баланс выставлен по замеру среднеквадратичных: раньше бочка была на
+    -- 19 дБ громче всего остального, трек был бочкой с еле слышным
+    -- оформлением, и стерео-образ широкого лида в нём было не разобрать.
+    -- Ориентир: бас и лид на 6-8 дБ ниже бочки, хэт на 11.
+    kickLevel = 0.45 :: Double
+    bassLevel = 2 :: Double
+    hatLevel = 1.5 :: Double
+    leadLevel = 1.2 :: Double
     gate = trapezoid trackSec * constant level
 
     -- Ритм читается строкой: мини-нотация Tidal, частоты в герцах.
@@ -175,8 +181,22 @@ sixteenBars =
     -- через накачку они пришли бы только транзитивно и исчезли бы вместе с
     -- ней.
     duckSpec = ", duck " <> show duckDepth <> " <" <> kickSpec <> ">" <> tempo
-    bassSpec = "saw+ladder 0.7, " <> bassNotes <> ", comp " <> showComp bassComp <> duckSpec
-    hatSpec = "noise+hp 6k, " <> hatNotes <> ", degrade " <> show hatDegrade <> duckSpec
+    bassSpec =
+      "saw+ladder 0.7 x"
+        <> show bassLevel
+        <> ", "
+        <> bassNotes
+        <> ", comp "
+        <> showComp bassComp
+        <> duckSpec
+    hatSpec =
+      "noise+hp 6k x"
+        <> show hatLevel
+        <> ", "
+        <> hatNotes
+        <> ", degrade "
+        <> show hatDegrade
+        <> duckSpec
     leadSpec side =
       "разд. 9 широкий "
         <> side
@@ -212,11 +232,24 @@ sixteenBars =
     leadGain = compGainOf leadComp (leadL + leadR)
     leadOut chan = duck (chan * leadGain) * gate * constant leadLevel
 
+-- | Мастер-каскад вместо лимитера.
+--
+-- Пиков выше 0.8 в миксе пара десятков на полтора миллиона сэмплов, и все
+-- на совпадении атаки бочки с нотой лида. Резать ради них весь трек на 3 дБ
+-- нельзя, а tanh поднимает середину и придерживает верхушки: нормировка у
+-- shaper такая, что полная шкала остаётся на месте.
+--
+-- Обработка идёт при сведении, поэтому её правка не сбивает кэш стемов.
+-- Трим после насыщения: без него пик правого канала садится на 0.985, а
+-- запас у мастера должен быть.
+master :: Stereo -> Stereo
+master = bothChannels (shaper (constant 1.2) >>> (* constant 0.92))
+
 main :: IO ()
 main = do
   report <- writeWav env Bits16 tour track
   putStrLn (tour <> ": пик " <> show (clipPeak report))
-  trackPath <- renderTrack env trackSec "out/track.wav" sixteenBars
+  trackPath <- renderTrackWith env trackSec "out/track.wav" master sixteenBars
   putStrLn (trackPath <> ": 16 тактов, лид по разд. 9")
   where
     tour = "out/demo.wav"

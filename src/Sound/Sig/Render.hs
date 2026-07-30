@@ -14,6 +14,7 @@ module Sound.Sig.Render
   , mixStems
   , mixStemsStereo
   , renderTrack
+  , renderTrackWith
   ) where
 
 import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, takeMVar)
@@ -253,7 +254,15 @@ inParallel actions = do
 -- | Рендерит стемы на диск рядом с треком, сводит их по панораме и пишет
 -- стерео-мастер в 16 бит.
 renderTrack :: Env -> Double -> FilePath -> [Stem] -> IO FilePath
-renderTrack env secs path stems = do
+renderTrack env secs path = renderTrackWith env secs path id
+
+-- | То же, но сведённый мастер перед записью проходит через обработку:
+-- место под насыщение, общий трим или что угодно поперёк каналов.
+--
+-- Обработка идёт при сведении, а не в стемах, поэтому её правка не сбивает
+-- кэш и повторный прогон стоит одно чтение файлов.
+renderTrackWith :: Env -> Double -> FilePath -> (Stereo -> Stereo) -> [Stem] -> IO FilePath
+renderTrackWith env secs path master stems = do
   -- Совпали имя и спецификация, а сигналы разные: оба стема писали бы в один
   -- файл одновременно, и в миксе оказался бы один из них дважды. От сигнала
   -- путь зависеть не может, поэтому ловим здесь.
@@ -264,7 +273,7 @@ renderTrack env secs path stems = do
         "hsig: в один файл пишут несколько стемов: "
           <> unwords [stemName s | s <- stems, stemPath env secs dir s `elem` dups]
   paths <- inParallel (map (renderStem env secs dir) stems)
-  Stereo l r <- mixStemsStereo env (zip (map stemPan stems) paths)
+  Stereo l r <- master <$> mixStemsStereo env (zip (map stemPan stems) paths)
   _ <- writeWavStereo env Bits16 path (takeSec secs l) (takeSec secs r)
   pure path
   where

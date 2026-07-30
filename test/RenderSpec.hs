@@ -10,6 +10,7 @@ import Sound.Sig.IO
 import Sound.Sig.Osc (sine)
 import Sound.Sig.Render
 import Sound.Sig.Score
+import Sound.Sig.Stereo (bothChannels)
 import System.Directory (doesFileExist)
 import System.FilePath (takeFileName, (</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -260,6 +261,24 @@ stemTests =
               (l, r) = (xs U.! (2 * i), xs U.! (2 * i + 1))
           assertBool (show l) (abs (l - 0.5) < 1e-3)
           assertBool (show r) (abs (r - 0.25) < 1e-3)
+    , -- Обработка мастера идёт после сведения и до записи, поэтому её правка
+      -- не трогает стемы и не сбивает кэш.
+      testCase "renderTrackWith прогоняет мастер" $
+        withSystemTempDirectory "hsig-test" $ \dir -> do
+          let track = [stemOf "one" "v1" (constant 0.5)]
+          plain <- renderTrack defaultEnv 0.02 (dir </> "a" </> "mix.wav") track
+          quiet <-
+            renderTrackWith
+              defaultEnv
+              0.02
+              (dir </> "b" </> "mix.wav")
+              (bothChannels (* constant 0.5))
+              track
+          (_, _, xs) <- readWav plain
+          (_, _, ys) <- readWav quiet
+          U.length ys @?= U.length xs
+          assertBool "мастер не обработан" $
+            U.and (U.zipWith (\a b -> abs (b - a / 2) < 2 / 32768) xs ys)
     , -- Требование разд. 12: два рендера дают побитово одинаковый файл.
       -- Стемов несколько, потому что рендерятся они параллельно.
       testCase "рендер детерминирован" $
