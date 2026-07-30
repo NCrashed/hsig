@@ -38,20 +38,21 @@ vdelayTests =
             ys = render defaultEnv (vdelay 0.01 (takeSec 0.02 (constant 0.001)) (takeSec 0.05 (sine 200)))
         U.length xs @?= round (0.05 * rate)
         U.length ys @?= round (0.02 * rate)
-    , -- Дробная задержка обязана давать дробный сдвиг фазы, а не ближайший
-      -- целый: на движущемся источнике округление слышно щелчками.
-      testCase "полсэмпла это половина сдвига" $ do
+    , -- Дробная задержка обязана попадать в аналитический сдвиг, а не просто
+      -- быть где-то между соседями: сравнение с их средним пропустило бы
+      -- линейную интерполяцию, у неё это среднее и есть.
+      testCase "дробная задержка совпадает с аналитикой" $ do
         let f = 500
-            src = sine (constant f)
-            half = render defaultEnv (takeSec 0.02 (vdelay 0.01 (constant (10.5 / rate)) src))
-            whole = render defaultEnv (takeSec 0.02 (vdelay 0.01 (constant (10 / rate)) src))
-            next = render defaultEnv (takeSec 0.02 (vdelay 0.01 (constant (11 / rate)) src))
-            mid i = (whole U.! i + next U.! i) / 2
-            k = 500
-        -- Ровно посередине между соседями, куда точнее шага сетки.
-        assertBool (show (half U.! k, mid k)) (abs (half U.! k - mid k) < 1e-3)
-        assertBool "совпало с целым" (abs (half U.! k - whole U.! k) > 1e-3)
+            d = 10.5
+            w = 2 * pi * f / rate
+            xs = render defaultEnv (takeSec 0.02 (vdelay 0.01 (constant (d / rate)) (sine (constant f))))
+            err = maximum [abs (xs U.! i - sin (w * (fromIntegral i - d))) | i <- [100 .. 900]]
+        -- Линейная промахнулась бы на 5e-4, кубическая на единицы 1e-7.
+        assertBool (show err) (err < 1e-5)
     , -- Ради чего всё: на плавно едущем времени выход обязан быть гладким.
+      -- Порог тут не запас, а граница: округление до сэмпла двигает
+      -- указатель на два сэмпла за один выходной, то есть даёт ровно вдвое
+      -- больший скачок, чем сам синус.
       testCase "движение времени не щёлкает" $ do
         let sweep = constant 0.0005 + constant 0.0005 * mapSig sin (phase 0.5)
             xs = render defaultEnv (takeSec 1 (vdelay 0.002 sweep (sine 300)))
@@ -59,19 +60,32 @@ vdelayTests =
             -- Синус 300 Гц сам меняется не быстрее 0.04 за сэмпл.
             smooth = U.maximum (U.map abs (U.zipWith (-) (U.tail plain) plain))
             plain = render defaultEnv (takeSec 1 (sine 300))
-        assertBool (show (jumps, smooth)) (jumps < 3 * smooth)
-    , testCase "не зависит от размера блока" $ do
+        assertBool (show (jumps, smooth)) (jumps < 1.5 * smooth)
+        -- Иначе тождественный ноль прошёл бы с блеском.
+        assertBool (show (U.maximum (U.map abs xs))) (U.maximum (U.map abs xs) > 0.9)
+    , -- Разд. 12 требует побитового совпадения, а не близости: весь путь
+      -- посэмплово рекуррентный и переносит состояние через границу блока
+      -- без потерь.
+      testCase "не зависит от размера блока" $ do
         let sig = vdelay 0.002 (constant 0.0007 + constant 0.0003 * mapSig sin (phase 3)) (sine 300)
             big = render defaultEnv (takeSec 0.3 sig)
             small = render defaultEnv {envBlock = 61} (takeSec 0.3 sig)
-        assertBool "разошлось" (U.maximum (U.map abs (U.zipWith (-) big small)) < 1e-12)
-    , -- Вырожденные значения зажимаются, а не читают мимо буфера.
+        U.length small @?= U.length big
+        big @?= small
+    , -- Зажим виден по величине задержки, а не по конечности: конечным
+      -- останется и чтение мимо окна интерполяции. Рампа проходит через
+      -- кубическую интерполяцию точно, поэтому задержку читаем прямо.
       testCase "время за пределами зажимается" $ do
-        let run t = render defaultEnv (takeSec 0.02 (vdelay 0.001 (constant t) (sine 300)))
-            finite = U.all (\x -> not (isNaN x) && not (isInfinite x))
-        assertBool "отрицательное" (finite (run (-1)))
-        assertBool "больше максимума" (finite (run 10))
-        assertBool "NaN" (finite (run (0 / 0)))
+        let n = 400
+            src = fromSamples (map fromIntegral [0 .. n - 1 :: Int])
+            delayAt t =
+              let xs = render defaultEnv (vdelay 0.001 (constant t) src)
+               in fromIntegral (n - 50) - xs U.! (n - 50)
+        assertBool (show (delayAt (-1))) (abs (delayAt (-1) - 1) < 1e-9)
+        assertBool (show (delayAt (0 / 0))) (abs (delayAt (0 / 0) - 1) < 1e-9)
+        -- Потолок это размер буфера, он на пару сэмплов выше maxSec.
+        let top = delayAt 10
+        assertBool (show top) (top >= 48 && top <= 50)
     ]
 
 rate :: Double

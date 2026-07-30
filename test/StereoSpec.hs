@@ -60,18 +60,27 @@ still a = orbit (constant a)
 energy :: Double -> Sig -> Double
 energy secs s = U.sum (U.map (\x -> x * x) (render defaultEnv (takeSec secs s)))
 
--- | Сдвиг правого канала относительно левого в сэмплах: по максимуму
--- взаимной корреляции. Отрицательный означает, что правый пришёл раньше.
+-- | Межушная разница в секундах, положительная когда правое ухо раньше.
 --
--- Источник обязан быть широкополосным: у синуса корреляция периодична, и
--- максимум находится на первом попавшемся алиасе.
-lagSamples :: Stereo -> Int
-lagSamples (Stereo l r) = snd (maximum [(score k, k) | k <- [-96 .. 96]])
+-- Меряем по разности фаз низкочастотного тона: именно эта задержка и
+-- работает как признак локализации ниже полутора килогерц. Взаимная
+-- корреляция на шуме тут не годится - она идёт за пиком импульсной
+-- характеристики и не видит групповой задержки теневого фильтра, то есть
+-- показала бы верное число даже у модели, где фильтр эту задержку не
+-- скомпенсировал. Период тона 5 мс против 0.65 мс разницы, так что
+-- неоднозначности нет.
+itdSec :: Double -> Double
+-- atan2 (Im, Re) от sin (w n + p) даёт pi/2 - p, то есть растёт с
+-- задержкой; поэтому левое ухо минус правое, а не наоборот.
+itdSec a = (phaseOf xs - phaseOf ys) / (2 * pi * f)
   where
-    xs = render defaultEnv (takeSec 0.2 l)
-    ys = render defaultEnv (takeSec 0.2 r)
-    n = U.length xs - 256
-    score k = U.sum (U.zipWith (*) (U.slice 128 n xs) (U.slice (128 + k) n ys))
+    f = 200
+    Stereo l r = orbit (constant a) (sine (constant f))
+    xs = grab l
+    ys = grab r
+    grab s = U.drop (round (0.1 * envRate defaultEnv)) (render defaultEnv (takeSec 0.3 s))
+    phaseOf v = atan2 (part sin v) (part cos v)
+    part g v = U.sum (U.imap (\i x -> x * g (2 * pi * f * fromIntegral i / envRate defaultEnv)) v)
 
 orbitTests :: TestTree
 orbitTests =
@@ -83,41 +92,101 @@ orbitTests =
             xs = render defaultEnv (takeSec 0.05 l)
             ys = render defaultEnv (takeSec 0.05 r)
         assertBool "каналы разошлись" (U.maximum (U.map abs (U.zipWith (-) xs ys)) < 1e-12)
-    , -- Главный признак обхода: ближнее ухо слышит раньше. При 0.65 мс это
-      -- 31 сэмпл на 48 кГц, и знак говорит, с какой стороны источник.
-      testCase "ближнее ухо слышит раньше" $ do
-        let right = lagSamples (still (pi / 2) (noise 0))
-            left = lagSamples (still (negate pi / 2) (noise 0))
-            front = lagSamples (still 0 (noise 0))
-            oblique = lagSamples (still (pi / 4) (noise 0))
-        assertBool (show right) (right >= -34 && right <= -29)
-        assertBool (show left) (left >= 29 && left <= 34)
-        front @?= 0
-        -- Синус угла: на 45 градусах разница в 0.707 от полной.
-        assertBool (show oblique) (oblique >= -25 && oblique <= -20)
+    , -- Главный признак обхода: ближнее ухо слышит раньше, и ровно на
+      -- заявленные 0.65 мс. Без вычитания групповой задержки теневого
+      -- фильтра тут вышло бы 0.75 мс.
+      testCase "межушная разница по краям это 0.65 мс" $ do
+        let right = itdSec (pi / 2)
+            left = itdSec (negate pi / 2)
+            front = itdSec 0
+        assertBool (show right) (abs (right - 0.00065) < 3e-5)
+        assertBool (show left) (abs (left + 0.00065) < 3e-5)
+        assertBool (show front) (abs front < 1e-6)
     , -- Признака, различающего перед и зад, в модели нет, и это надо знать:
       -- полный оборот читается как обход через бока. Лечится HRTF.
       testCase "перед и зад неразличимы" $ do
         let front = render defaultEnv (takeSec 0.05 (leftChan (still 0 (noise 0))))
             back = render defaultEnv (takeSec 0.05 (leftChan (still pi (noise 0))))
         assertBool "модель различает" (U.maximum (U.map abs (U.zipWith (-) front back)) < 1e-12)
-    , -- Тень головы: у дальнего уха верха меньше, чем у ближнего.
+    , -- Тень головы: у дальнего уха заваливается верх. Абсолютной энергии
+      -- мало, разница уровней даёт то же отношение и сама по себе: убери
+      -- фильтр совсем, и критерий "впятеро" всё равно выполнится. Поэтому
+      -- рядом стоит наклон, то есть доля верха в собственной энергии канала,
+      -- и вот он без фильтра равен единице.
       testCase "дальнее ухо темнее ближнего" $ do
         let Stereo l r = still (pi / 2) (saw 300)
             top s = energy 0.2 (highpass 4000 s)
+            tilt s = top s / energy 0.2 s
         assertBool (show (top l, top r)) (top l < 0.2 * top r)
-    , testCase "по кругу энергия не проваливается" $ do
+        assertBool (show (tilt l, tilt r)) (tilt l < 0.5 * tilt r)
+    , -- Разница уровней по краям заявлена в 9.8 дБ.
+      testCase "разница уровней по краям" $ do
+        let Stereo l r = still (pi / 2) (saw 300)
+            ild = 10 * logBase 10 (energy 0.2 r / energy 0.2 l)
+        assertBool (show ild) (ild > 9 && ild < 12)
+    , -- Закон равной мощности держит сумму квадратов усилений тождественно
+      -- единицей, поэтому по кругу меняется только потеря в теневом фильтре,
+      -- а это 1.8 процента. Порог в двойку пропустил бы и линейный закон
+      -- панорамы с его провалом в центре, и жёсткую панораму.
+      testCase "по кругу энергия не проваливается" $ do
         let total a = let Stereo l r = still a (saw 300) in energy 0.2 l + energy 0.2 r
             angles = [0, pi / 4, pi / 2, 3 * pi / 4, pi, 5 * pi / 4, 3 * pi / 2]
             es = map total angles
-        assertBool (show es) (maximum es < 2 * minimum es)
-    , -- Полный оборот возвращает в ту же точку.
-      testCase "оборот замыкается" $ do
-        let a = still 0 (saw 300)
-            b = still (2 * pi) (saw 300)
-            diff (Stereo x _) (Stereo y _) =
-              U.maximum (U.map abs (U.zipWith (-) (render defaultEnv (takeSec 0.05 x)) (render defaultEnv (takeSec 0.05 y))))
-        assertBool (show (diff a b)) (diff a b < 1e-9)
+        assertBool (show es) (maximum es < 1.1 * minimum es)
+    , -- Хвост дальнего канала отстаёт на 0.75 мс, поэтому ноте нужны те же
+      -- 0.75 мс тишины после конца. Без них канал обрывается ступенькой, и
+      -- рецепт в хаддоке обязан её убирать.
+      testCase "добивка спасает хвост дальнего канала" $ do
+        -- Источник без колебания: у тона последний сэмпл попадает в
+        -- случайную точку периода и ступеньку не показывает.
+        let dur = 0.05
+            note = line [(0, 1), (dur, 0)]
+            lastOf s = U.last (render defaultEnv s)
+            -- Источник слева, значит дальнее ухо правое.
+            far s = let Stereo _ r = still (negate pi / 2) s in r
+            bare = abs (lastOf (far note))
+            padded = abs (lastOf (far (padSec (dur + 0.00075) note)))
+        -- Ровного нуля у добитого не будет: теневой фильтр отстаёт от спада
+        -- на свою постоянную времени. Важно, что ступенька уходит в разы.
+        assertBool (show bare) (bare > 1e-3)
+        assertBool (show (bare, padded)) (padded < 0.3 * bare)
+    , -- Гребёнка при сведении в моно, про которую написано в хаддоке. Она
+      -- глубже всего не по бокам, а у центра: там уровни ушей почти равны и
+      -- пути гасят друг друга, а по бокам дальнее ухо задавлено тенью.
+      testCase "в моно провал глубже у центра, чем по бокам" $ do
+        -- Считать с самого начала нельзя: до прихода задержанного пути
+        -- гашения нет, и этот всплеск на глубоком провале даёт половину
+        -- энергии окна.
+        let steady s = U.drop (round (0.1 * envRate defaultEnv)) (render defaultEnv (takeSec 0.3 s))
+            power s = U.sum (U.map (\x -> x * x) (steady s))
+            sum2 f a =
+              let Stereo l r = still a (sine (constant f))
+               in 10 * logBase 10 (power ((l + r) * constant 0.5) / power r)
+            near = sum2 4400 (pi / 18)
+            side = sum2 800 (pi / 2)
+        assertBool (show near) (near < (-15))
+        assertBool (show (near, side)) (side > near + 8)
+    , -- Межушная разница обязана расти по синусу угла, а не скакать: на
+      -- промежуточных углах образ иначе застревал бы или проскакивал.
+      testCase "задержка растёт по синусу угла" $
+        mapM_
+          ( \a ->
+              let want = 0.00065 * sin a
+               in assertBool (show (a, itdSec a, want)) (abs (itdSec a - want) < 3e-5)
+          )
+          [pi / 6, pi / 4, pi / 3, pi / 2, 5 * pi / 6]
+    , -- Длина по короткому из угла и источника, как у vdelay под ним.
+      testCase "длина по короткому" $ do
+        let Stereo l _ = orbit (takeSec 0.1 (phase 1)) (takeSec 0.3 (saw 300))
+            Stereo l' _ = orbit (phase 1) (takeSec 0.2 (saw 300))
+        U.length (render defaultEnv l) @?= round (0.1 * envRate defaultEnv)
+        U.length (render defaultEnv l') @?= round (0.2 * envRate defaultEnv)
+    , -- NaN в угле не должен разносить NaN по всему выходу.
+      testCase "NaN в угле прижимается к краю" $ do
+        let Stereo l r = still (0 / 0) (saw 300)
+            finite s = U.all (\x -> not (isNaN x) && not (isInfinite x)) (render defaultEnv (takeSec 0.05 s))
+        assertBool "левый" (finite l)
+        assertBool "правый" (finite r)
     , -- Движение не должно щёлкать: разрывов больше, чем у самого сигнала,
       -- взяться неоткуда.
       testCase "вращение не щёлкает" $ do

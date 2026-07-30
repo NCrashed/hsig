@@ -21,7 +21,12 @@ rate = envRate defaultEnv
 -- | Среднеквадратичное по окнам: огибающая, по которой видно и вспышки, и
 -- перекладку по каналам.
 windowsOf :: Double -> Double -> Sig -> [Double]
-windowsOf secs win s = go (render defaultEnv (takeSec secs s))
+windowsOf = windowsFrom 0
+
+-- | То же, но сетка окон начинается со сдвига.
+windowsFrom :: Double -> Double -> Double -> Sig -> [Double]
+windowsFrom skip secs win s =
+  go (U.drop (round (skip * rate)) (render defaultEnv (takeSec (skip + secs) s)))
   where
     n = round (win * rate)
     go v
@@ -67,13 +72,18 @@ rodTests =
             second = env (1 / 3)
             top = snd (maximum (zip first [0 :: Int ..]))
         assertBool (show (second !! top, maximum second)) (second !! top < 0.1 * maximum second)
-    , testCase "конечные значения и без клиппинга" $ do
+    , -- Патч нормирован: пик около 0.12, и границы поставлены так, чтобы
+      -- заметить уход в разы, а не только клиппинг. Уровень в миксе живёт в
+      -- треке и от этого числа считается.
+      testCase "уровень нормирован и значения конечны" $ do
         let Stereo l r = rod 0.5 4 440 0 0
-            check s =
+            peak s =
               let v = render defaultEnv (takeSec 1 s)
-               in U.all (\x -> not (isNaN x) && not (isInfinite x) && abs x < 1) v
-        assertBool "левый" (check l)
-        assertBool "правый" (check r)
+               in if U.all (\x -> not (isNaN x) && not (isInfinite x)) v
+                    then U.maximum (U.map abs v)
+                    else 0 / 0
+        assertBool (show (peak l)) (peak l > 0.05 && peak l < 0.3)
+        assertBool (show (peak r)) (peak r > 0.05 && peak r < 0.3)
     , testCase "не зависит от размера блока" $ do
         let Stereo l _ = rod 0.5 4 440 0 0
             big = render defaultEnv (takeSec 0.3 l)
@@ -81,19 +91,28 @@ rodTests =
         assertBool "разошлось" (U.maximum (U.map abs (U.zipWith (-) big small)) < 1e-12)
     ]
 
+-- | Оборот берём быстрый: структура вспышек от скорости не зависит, если
+-- ускорить обе частоты одинаково, зато рендер вчетверо короче.
+turnSec :: Double
+turnSec = 0.5
+
+-- | Те же отношения, что в треке: три стержня, восьмые при обороте за такт.
+-- Отсюда @n * pulseHz \/ orbitHz@ = 24 вспышки на оборот.
+reactorAt :: Double -> Stereo
+reactorAt spread = reactor (1 / turnSec) (8 / turnSec) spread [440, 523.25, 659.25]
+
 -- | Баланс каналов на каждой вспышке за один оборот, 24 штуки.
 --
--- Оборот берём быстрый: структура вспышек от скорости не зависит, а рендер
--- вчетверо короче.
+-- Сетку окон сдвигаем на полокна: вспышки приходятся ровно на границы, и без
+-- сдвига энергия каждой делилась бы между соседями.
 flashBalance :: Double -> [Double]
 flashBalance spread =
   [ (a - b) / max 1e-12 (a + b)
-  | (a, b) <- zip (windowsOf turn flash l) (windowsOf turn flash r)
+  | (a, b) <- zip (windowsFrom (flash / 2) turnSec flash l) (windowsFrom (flash / 2) turnSec flash r)
   ]
   where
-    Stereo l r = reactor (1 / turn) (4 / turn) spread [440, 523.25, 659.25]
-    turn = 0.5
-    flash = turn / 24
+    Stereo l r = reactorAt spread
+    flash = turnSec / 24
 
 -- | Глубина обхода: амплитуда цикла, укладывающегося ровно в оборот.
 -- Разбросанные без порядка вспышки в этот бин не попадают.
@@ -122,7 +141,17 @@ reactorTests =
       -- вспыхивают по очереди, поэтому вспышки обходят голову ровным шагом:
       -- 24 вспышки на оборот, баланс проходит ровно один цикл, минимум на
       -- четверти круга (источник справа), максимум на трёх четвертях.
-      testCase "вспышки обходят круг ровным шагом" $ do
+      testCase "вспышек за оборот ровно n на период вспышки" $ do
+        -- Это и держит раскладку. Нормированный баланс от неё не зависит:
+        -- при spread = 0 стержни в любой момент под одним углом, и общий
+        -- множитель вспышки в нём сокращается. По балансу одинаково
+        -- выглядят и ровный обход, и все три стержня разом.
+        -- Отсчёт со сдвига в полвспышки: иначе вспышки на обоих концах
+        -- отрезка попадают в счёт и их выходит 25.
+        let Stereo l r = reactorAt 0
+            flash = turnSec / 24
+        bursts (windowsFrom (flash / 2) turnSec (turnSec / 240) (l + r)) @?= 24
+    , testCase "вспышки обходят круг ровным шагом" $ do
         let bal = flashBalance 0
             signs = map (> 0) (filter ((> 0.05) . abs) bal)
             top = snd (maximum (zip bal [0 :: Int ..]))
@@ -132,13 +161,29 @@ reactorTests =
         length (filter id (zipWith (/=) signs (drop 1 signs))) @?= 1
         assertBool (show bottom) (bottom >= 4 && bottom <= 8)
         assertBool (show top) (top >= 16 && top <= 20)
-    , -- Разведённые поровну стержни гасят друг друга: усиления трёх точек,
-      -- разнесённых на 120 градусов, взаимно компенсируются, и обхода не
-      -- слышно. Это и есть причина держать spread нулевым.
+    , -- Разведённые поровну стержни обходят те же точки, но в перемешанном
+      -- порядке, поэтому цикл на оборот в балансе пустеет. Это и есть
+      -- причина держать spread нулевым.
       testCase "разведённые поровну стержни гасят обход" $ do
         let together = cycleDepth (flashBalance 0)
             apart = cycleDepth (flashBalance (1 / 3))
         assertBool (show (together, apart)) (apart < 0.25 * together)
+    , -- Средний случай, который легко описать неверно: при разносе ровно в
+      -- шаг вспышки внутри периода схлопываются в одну точку. Образ при этом
+      -- не замирает, он обходит круг ступенями по orbitHz/pulseHz, то есть
+      -- втрое грубее: восемь ступеней вместо двадцати четырёх.
+      testCase "разнос в шаг склеивает вспышки в тройки" $ do
+        -- Внутри тройки угол один, поэтому разброс мал; сравниваем с
+        -- разбросом тех же троек при нулевом разносе, где вспышки идут по
+        -- разным точкам. Абсолютный порог тут был бы гаданием: стержни
+        -- разной частоты теневой фильтр красит по-разному.
+        let spans bal = [maximum g - minimum g | j <- [0 .. 7], let g = take 3 (drop (3 * j) bal)]
+            glued = spans (flashBalance (1 / 24))
+            spreadOut = spans (flashBalance 0)
+            steps = [v | (j, v) <- zip [0 :: Int ..] (flashBalance (1 / 24)), j `mod` 3 == 0]
+        assertBool (show (maximum glued, maximum spreadOut)) (maximum glued < 0.5 * maximum spreadOut)
+        -- И круг всё-таки обходится, просто восемью ступенями.
+        assertBool (show steps) (maximum steps > 0.15 && minimum steps < (-0.15))
     , testCase "пустой список это тишина" $ do
         let Stereo l _ = reactor 0.5 4 0 []
         U.length (render defaultEnv (takeSec 0.1 l)) @?= 0
