@@ -265,7 +265,9 @@ instance IsString (Pattern String) where
 --
 -- Поддержано ядро: последовательность делит цикл, @~@ пауза, @*n@ ускорение,
 -- @\/n@ замедление, @[..]@ подгруппа в один слот, @\<..\>@ смена по циклам,
--- запятая наложение, @?@ прореживание вдвое.
+-- запятая наложение, @?@ прореживание вдвое, @?0.3@ прореживание с явной
+-- долей (точка обязательна, как в Tidal). У каждого @?@ свой поток
+-- случайности, номер по порядку вхождения.
 parsePat :: String -> Pattern String
 parsePat src = case parseStack (tokenize src) of
   (p, []) -> p
@@ -292,19 +294,37 @@ data Tok
   | TComma
   | TStar
   | TSlash
-  | -- | номер потока случайности, проставляется в 'numberQuests'
-    TQuest Int
+  | -- | номер потока случайности (см. 'numberQuests') и доля прореживания
+    TQuest Int Double
   deriving (Eq, Show)
 
 tokenize :: String -> [Tok]
 tokenize = numberQuests . go
   where
     go [] = []
+    go ('?' : cs) = quest cs
     go (c : cs)
       | isSpace c = go cs
       | Just t <- lookup c punctuation = t : go cs
       | otherwise = let (w, rest) = span plain (c : cs) in TWord w : go rest
-    plain ch = not (isSpace ch) && ch `notElem` map fst punctuation
+    plain ch = ch /= '?' && not (isSpace ch) && ch `notElem` map fst punctuation
+
+    -- Доля разбирается здесь, а не в парсере: только тут ещё видно, прижата
+    -- ли она к вопросу. Пробелы токенизатор съедает, и "bd? 0.3" в парсере
+    -- уже не отличить от "bd?0.3", а это разные вещи - прореживание с долей
+    -- против прореживания и отдельного атома.
+    --
+    -- Точка в доле обязательна, как в Tidal: там долю читает Parsec-овский
+    -- float, который целое число не принимает. Поэтому "bd?0" это
+    -- прореживание вполовину и отдельный атом "0", а не доля ноль.
+    quest cs = case span (\ch -> isDigit ch || ch == '.') cs of
+      (num, rest)
+        | '.' `elem` num -> case decimal num of
+            Just v
+              | v >= 0 && v <= 1 -> TQuest 0 (fromRational v) : go rest
+              | otherwise -> bad ("доля после ? должна быть от 0 до 1: " <> num)
+            Nothing -> bad ("после ? нужна доля вида 0.3: " <> num)
+        | otherwise -> TQuest 0 0.5 : go (num <> rest)
 
 -- | Нумерует вопросы слева направо, как это делает парсер Tidal.
 --
@@ -315,7 +335,7 @@ numberQuests :: [Tok] -> [Tok]
 numberQuests = go 0
   where
     go _ [] = []
-    go !k (TQuest _ : ts) = TQuest k : go (k + 1) ts
+    go !k (TQuest _ amt : ts) = TQuest k amt : go (k + 1) ts
     go !k (t : ts) = t : go k ts
 
 punctuation :: [(Char, Tok)]
@@ -328,7 +348,6 @@ punctuation =
   , (',', TComma)
   , ('*', TStar)
   , ('/', TSlash)
-  , ('?', TQuest 0)
   ]
 
 -- | Слои через запятую.
@@ -361,9 +380,9 @@ parseTerm ts = mods (parseAtom ts)
   where
     mods (p, TStar : TWord w : rest) = mods (fast (rate w) p, rest)
     mods (p, TSlash : TWord w : rest) = mods (slow (rate w) p, rest)
-    -- Номер потока берём от позиции в строке (сколько токенов осталось):
-    -- разные ? одной строки обязаны решать независимо.
-    mods (p, TQuest k : rest) = mods (degradeSeeded k 0.5 p, rest)
+    -- Номер потока приходит готовым из numberQuests: он равен числу
+    -- вопросов левее, поэтому разные ? одной строки решают независимо.
+    mods (p, TQuest k amt : rest) = mods (degradeSeeded k amt p, rest)
     mods (_, TStar : rest) = bad ("после * нужно число: " <> show (take 1 rest))
     mods (_, TSlash : rest) = bad ("после / нужно число: " <> show (take 1 rest))
     mods done = done

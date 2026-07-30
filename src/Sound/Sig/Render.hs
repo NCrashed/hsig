@@ -18,9 +18,10 @@ module Sound.Sig.Render
   ) where
 
 import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, takeMVar)
-import Control.Exception (SomeException, throwIO, try)
-import Control.Monad (forM_, when)
+import Control.Exception (IOException, SomeException, catch, throwIO, try)
+import Control.Monad (forM_, unless, when)
 import Control.Monad.ST (runST)
+import Data.List (stripPrefix)
 import Data.Maybe (fromMaybe)
 import Data.Vector.Unboxed qualified as U
 import Data.Vector.Unboxed.Mutable qualified as UM
@@ -32,6 +33,7 @@ import Sound.Sig.Score
 import Sound.Sig.Stereo
 import System.Directory (doesFileExist, listDirectory, removeFile)
 import System.FilePath (takeDirectory, takeExtension, takeFileName, (</>))
+import System.IO (hPutStrLn, stderr)
 
 -- Планировщик ---------------------------------------------------------------
 
@@ -188,11 +190,19 @@ renderStem env secs dir stem = do
   where
     path = stemPath env secs dir stem
 
--- | Путь стема. Имя и спецификация вместе определяют файл, поэтому одно имя
--- с разными спецификациями это разные файлы, а не конфликт.
+-- | Путь стема: @<имя>-<сэмплов>-<хэш>.wav@. Имя и спецификация вместе
+-- определяют файл, поэтому одно имя с разными спецификациями это разные
+-- файлы, а не конфликт.
+--
+-- Длина стоит в имени, а не только внутри хэша, чтобы уборка могла отличить
+-- устаревшую спецификацию от другой длины: иначе короткое превью и полный
+-- прогон сносили бы кэш друг друга.
 stemPath :: Env -> Double -> FilePath -> Stem -> FilePath
 stemPath env secs dir stem =
-  dir </> (stemName stem <> "-" <> stemHash env secs stem <> ".wav")
+  dir </> (stemName stem <> "-" <> show (samplesOf env secs) <> "-" <> stemHash env secs stem <> ".wav")
+
+samplesOf :: Env -> Double -> Int
+samplesOf env secs = round (secs * envRate env)
 
 -- | Компоненты сворачиваются цепочкой, а не складываются: у суммы любая
 -- компенсирующая пара правок (seed на единицу вверх, длина на сэмпл вниз)
@@ -285,29 +295,53 @@ renderTrackWith env secs path master stems = do
         "hsig: в один файл пишут несколько стемов: "
           <> unwords [stemName s | s <- stems, stemPath env secs dir s `elem` dups]
   paths <- inParallel (map (renderStem env secs dir) stems)
-  sweepStale dir (map stemName stems) paths
+  sweepStale dir (samplesOf env secs) (map stemName stems) paths
   Stereo l r <- master <$> mixStemsStereo env (zip (map stemPan stems) paths)
   _ <- writeWavStereo env Bits16 path (takeSec secs l) (takeSec secs r)
   pure path
   where
     dir = takeDirectory path
 
--- | Удаляет стемы с устаревшими хэшами. Имя должно быть ровно
--- @<имя>-<восемь шестнадцатеричных>.wav@ для имени из трека, иначе файл не
--- наш и остаётся на месте.
-sweepStale :: FilePath -> [String] -> [FilePath] -> IO ()
-sweepStale dir names keep = do
-  files <- listDirectory dir
-  mapM_ (removeFile . (dir </>)) (filter stale files)
+-- | Удаляет стемы с устаревшими хэшами и докладывает об этом в stderr:
+-- разрушительная операция не должна быть молчаливой.
+--
+-- Имя обязано совпасть с @<имя>-<сэмплов>-<хэш>.wav@ при том же числе
+-- сэмплов, иначе файл не наш и остаётся на месте. Файлы старого вида без
+-- длины сносятся всегда: их могла записать только прежняя версия.
+--
+-- Отказы уборки не валят рендер: удалять чужое или несуществующее это не
+-- причина терять уже посчитанные стемы. Та же политика, что у dropQuietly
+-- при записи.
+sweepStale :: FilePath -> Int -> [String] -> [FilePath] -> IO ()
+sweepStale dir wanted names keep
+  | null names = pure ()
+  | otherwise = do
+      files <- listDirectory dir `catch` emptyOnError
+      let stale = filter ours files
+      mapM_ (removeQuietly . (dir </>)) stale
+      unless (null stale) $
+        hPutStrLn stderr ("hsig: убрано устаревших стемов " <> show (length stale) <> ": " <> unwords stale)
   where
+    emptyOnError :: IOException -> IO [FilePath]
+    emptyOnError _ = pure []
     current = map takeFileName keep
-    stale f = f `notElem` current && any (`owns` f) names
-    owns n f = case splitAt (length n + 1) f of
-      (start, rest) ->
-        start == n <> "-"
-          && length rest == 12
+    ours f = f `notElem` current && any (\n -> mine n f || legacy n f) names
+    mine n = hashed (n <> "-" <> show wanted <> "-")
+    legacy n = hashed (n <> "-")
+    hashed pre f = case stripPrefix pre f of
+      Just rest ->
+        length rest == 12
           && takeExtension rest == ".wav"
           && all (`elem` "0123456789abcdef") (take 8 rest)
+      Nothing -> False
+
+-- | Удаляет файл, не поднимая шума: отказ уборки не причина терять уже
+-- посчитанные стемы.
+removeQuietly :: FilePath -> IO ()
+removeQuietly p = removeFile p `catch` ignore
+  where
+    ignore :: IOException -> IO ()
+    ignore _ = pure ()
 
 -- | Значения, встретившиеся больше одного раза, по одному разу каждое.
 duplicates :: [String] -> [String]

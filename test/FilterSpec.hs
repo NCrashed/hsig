@@ -39,6 +39,42 @@ svfTests =
                     (U.maximum (U.map abs (U.zipWith (-) sum3 x)) < 1e-12)
           )
           [(200, 0), (1000, 0.5), (5000, 0.9), (100, 1)]
+    , -- Отклик прибит к аналитике, как у onepole и ladder. Тождество выше
+      -- этого не даёт: оно выполняется при любых g и R, поэтому пропустило бы
+      -- самую частую ошибку в SVF - забытое предыскажение (g = pi*fc/rate
+      -- вместо tan). Высокий катофф обязателен: на 1 кГц tan даёт разницу в
+      -- 0.14 процента, а на 8 кГц уже заметную.
+      testCase "совпадает с аналитическим SVF" $
+        mapM_
+          ( \(fc, res) -> do
+              let check name fx =
+                    let db = worstDb (svfMag fc res name) (0.45 * rate) (responseOf 1 (fx (constant fc) (constant res)))
+                     in assertBool (name <> " " <> show (fc, res) <> ": " <> show db <> " dB") (db < 0.1)
+              check "lp" svf
+              check "bp" svfBand
+              check "hp" svfHigh
+          )
+          [(200, 0.293), (8000, 0.293), (8000, 0.9)]
+    , -- Отображение резонанса в Q задокументировано числами, значит должно и
+      -- проверяться: на катоффе усиление ФНЧ ровно Q = 1/(2R).
+      testCase "резонанс отображается в Q" $
+        mapM_
+          ( \res ->
+              let got = responseOf 1 (svf 1000 (constant res)) !! binOf 1000
+                  want = 1 / (2 * max 1e-4 (1 - res))
+               in assertBool (show (res, got, want)) (abs (got / want - 1) < 0.02)
+          )
+          [0, 0.293, 0.7, 0.9]
+    , -- На единичном резонансе Q около 5000, то есть постоянная затухания
+      -- 1.6 с: на окне в 0.2 с звон от нарастания не отличить, нужна секунда.
+      testCase "на резонансе 1 звенит, но затухает" $ do
+        let n = round rate
+            xs = render defaultEnv (svf 1000 1 (fromSamples (1 : replicate (n - 1) 0)))
+            half = U.length xs `div` 2
+            early = rms (U.slice 0 half xs)
+            late = rms (U.slice half half xs)
+        assertBool (show (early, late)) (late < early && late > 0.1 * early)
+        assertBool "NaN" (U.all (not . isNaN) xs)
     , -- Двенадцать децибел на октаву, в отличие от двадцати четырёх у ladder.
       testCase "спад около 12 дБ на октаву" $ do
         let mags = responseOf 1 (svf 100 0.293)
@@ -110,6 +146,18 @@ responseOf amp fx = map (/ amp) (spectrum (render defaultEnv (fx (impulse amp)))
 -- частоту, поэтому в формуле tan, а не сама частота.
 onepoleMag :: Double -> Double -> Double
 onepoleMag fc f = 1 / sqrt (1 + sq (tan (pi * f / rate) / tan (pi * fc / rate)))
+
+-- | Точный отклик TPT-SVF. Частоты предыскажены так же, как в реализации,
+-- поэтому совпадение обязано быть с точностью до ошибки Double.
+svfMag :: Double -> Double -> String -> Double -> Double
+svfMag fc res kind f = case kind of
+  "lp" -> base
+  "bp" -> w * base
+  _ -> w * w * base
+  where
+    r = max 1e-4 (1 - res)
+    w = tan (pi * f / rate) / tan (pi * fc / rate)
+    base = 1 / sqrt (sq (1 - w * w) + sq (2 * r * w))
 
 -- | Аналоговый прототип из разд. 12: верен только там, где предыскажением
 -- можно пренебречь.

@@ -38,9 +38,14 @@ import Sound.Sig.Core
 --
 -- Замер на понижении 96 -> 48 кГц: в полосе пропускания до 20 кГц отклонение
 -- не измеряется (меньше 0.001 дБ), в полосе задерживания -163 дБ на 28 кГц
--- и -185 дБ выше 36 кГц. Требование разд. 12 (0.01 дБ и -120 дБ) выполнено
--- с запасом. Переходная полоса около 4 кГц: то, что лежит между 24 и 28 кГц,
--- заворачивается в 20-24 кГц с ослаблением около 68 дБ.
+-- и -185 дБ выше 36 кГц. Переходная полоса около 4 кГц: то, что лежит между
+-- 24 и 28 кГц, заворачивается в 20-24 кГц с ослаблением около 68 дБ.
+--
+-- Целые отношения - лёгкий случай: там дробная часть попадает ровно в строку
+-- таблицы ядер. Замер на неудобном 44.1 -> 48 кГц: полоса пропускания до
+-- 15 кГц ровная до 0.0001 дБ, худший посторонний тон -173 дБ на 1 кГц и
+-- -126 дБ на 15 кГц. Требование разд. 12 (0.01 дБ и -120 дБ) выполнено на
+-- обоих.
 resample :: Double -> Sig -> Sig
 resample from sig
   | from <= 0 = error "hsig: resample требует положительной частоты"
@@ -97,20 +102,37 @@ fill need buf base end src
       [] -> (buf, base, Just (base + U.length buf), [])
       c : cs -> fill need (buf U.++ c) base end cs
 
--- | Один выходной сэмпл: ядро своей фазы поверх окна входа.
+-- | Один выходной сэмпл: ядро нужной фазы поверх окна входа.
+--
+-- Отводы берутся с интерполяцией между двумя соседними строками таблицы.
+-- Без неё выход считался бы для времени, округлённого до шага таблицы, а
+-- это округление гуляет от сэмпла к сэмплу - то есть модуляция времени
+-- пилой, и в спектре образы на уровне около -60 дБ. Заметно это только на
+-- неудобных отношениях: при целом отношении дробная часть попадает ровно в
+-- строку, и ошибки нет вовсе.
 resampleAt :: Double -> Int -> U.Vector Double -> U.Vector Double -> Int -> Int -> Double
-resampleAt step half table buf base m = U.sum (U.imap tapAt (U.slice (p * taps) taps table))
+resampleAt step half table buf base m = go 0 0
   where
     taps = 2 * half
     t = fromIntegral m * step
     k = floor t :: Int
-    p = min (fracSteps - 1) (floor ((t - fromIntegral k) * fromIntegral fracSteps))
-    tapAt j h = h * at (k - half + 1 + j)
+    q = (t - fromIntegral k) * fromIntegral fracSteps
+    p = min (fracSteps - 1) (floor q)
+    g = q - fromIntegral p
+    lo = p * taps
+    hi = lo + taps
+    go !j !acc
+      | j >= taps = acc
+      | otherwise = go (j + 1) (acc + h * at (k - half + 1 + j))
+      where
+        h0 = U.unsafeIndex table (lo + j)
+        h1 = U.unsafeIndex table (hi + j)
+        h = h0 + g * (h1 - h0)
     at i
       | i < base || i >= base + U.length buf = 0
       | otherwise = U.unsafeIndex buf (i - base)
 
--- | Фаз в таблице ядер.
+-- | Фаз в таблице ядер. Строк на одну больше: последней нужен сосед справа.
 fracSteps :: Int
 fracSteps = 512
 
@@ -118,14 +140,15 @@ fracSteps = 512
 -- обрезанный окном Кайзера. Сумма отводов нормирована в единицу, иначе
 -- постоянная составляющая зависела бы от фазы.
 fracKernels :: Double -> Int -> U.Vector Double
-fracKernels band half = U.concat (map row [0 .. fracSteps - 1])
+fracKernels band half = U.concat (map row [0 .. fracSteps])
   where
     taps = 2 * half
     beta = kaiserBeta attenDb
-    row p = U.map (/ U.sum ts) ts
+    row p = U.map (/ total) ts
       where
         f = fromIntegral p / fromIntegral fracSteps
         ts = U.generate taps (\t -> tap (fromIntegral (t - half + 1) - f))
+        total = U.sum ts
     tap x = sinc (band * x) * window (x / fromIntegral half)
     sinc x
       | abs x < 1e-12 = 1

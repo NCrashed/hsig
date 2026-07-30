@@ -191,11 +191,21 @@ parseHeader path bs size = do
   when (BS.length bs < 12) $ fail' "файл короче заголовка"
   when (tagAt bs 0 /= riffTag || tagAt bs 8 /= waveTag) $ fail' "это не RIFF/WAVE"
   case (lookup fmtTag cs, lookup dataTag cs) of
-    (Just (fmtAt, _), Just (dataAt, dataLen)) -> do
-      let format = u16 bs fmtAt
+    (Just (fmtAt, fmtLen), Just (dataAt, dataLen)) -> do
+      let tagged = u16 bs fmtAt
           channels = u16 bs (fmtAt + 2)
           rate = u32 bs (fmtAt + 4)
           bits = u16 bs (fmtAt + 14)
+      -- WAVE_FORMAT_EXTENSIBLE: настоящий формат лежит в первых двух байтах
+      -- GUID подформата, а сам тег это 0xFFFE. Так пишет ffmpeg всё, что не
+      -- влезает в простую шапку: 24 бита и частоты выше 48 кГц.
+      format <-
+        if tagged /= 0xFFFE
+          then pure tagged
+          else
+            if fmtLen < 40
+              then fail' ("шапка extensible короче 40 байт: " <> show fmtLen)
+              else pure (u16 bs (fmtAt + 24))
       when (channels < 1) $ fail' "нет каналов"
       unless (known (format, bits)) $
         fail' ("неизвестный формат " <> show format <> "/" <> show bits)

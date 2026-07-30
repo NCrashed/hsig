@@ -262,12 +262,22 @@ correlation xs ys = cov / sqrt (var xs * var ys)
 
 -- | Пишет сигнал, портит байты файла и отдаёт результат чтения.
 readBroken :: BitDepth -> [Double] -> (BS.ByteString -> BS.ByteString) -> IO (Either IOException (Double, Int, U.Vector Double))
-readBroken depth xs damage = withSystemTempDirectory "hsig-test" $ \dir -> do
+readBroken = readBrokenBy readWav
+
+-- | То же, но читалку задаёт вызывающий: проверки обязаны совпадать у
+-- обычного и поблочного чтения.
+readBrokenBy
+  :: (FilePath -> IO (Double, Int, U.Vector Double))
+  -> BitDepth
+  -> [Double]
+  -> (BS.ByteString -> BS.ByteString)
+  -> IO (Either IOException (Double, Int, U.Vector Double))
+readBrokenBy reader depth xs damage = withSystemTempDirectory "hsig-test" $ \dir -> do
   let path = dir </> "t.wav"
   _ <- writeWav slowEnv depth path (fromSamples xs)
   bs <- BS.readFile path
   BS.writeFile path (damage bs)
-  try (readWav path)
+  try (reader path)
 
 reading :: TestTree
 reading =
@@ -331,19 +341,83 @@ reading =
           -- Все блоки по запрошенному размеру, кроме последнего.
           map U.length (init blocks) @?= replicate 7 128
           U.length (last blocks) @?= 104
-    , testCase "поблочное чтение проверяет заголовок так же" $ do
-        r <- readBroken Bits16 (replicate 100 0.5) (BS.take 100)
-        assertLeft "усечённый файл прочитался" r
-        bad <- withSystemTempDirectory "hsig-test" $ \dir -> do
-          let path = dir </> "t.wav"
-          _ <- writeWav slowEnv Bits16 path (fromSamples [0.5])
-          bs <- BS.readFile path
-          BS.writeFile path (BS.concat ["JUNK", BS.drop 4 bs])
-          try (readWavBlocks 64 path)
-        assertLeft "не RIFF прочитался" (fmap (\(a, b, _) -> (a, b)) bad)
+    , -- Поблочное чтение обязано отвергать то же, что и обычное, и по своим
+      -- путям: размер файла оно берёт из getFileSize, а шапку из первых
+      -- 64 КиБ, то есть проверки идут не через те же данные.
+      testCase "поблочное чтение отвергает то же, что обычное" $
+        mapM_
+          ( \(what, damage) -> do
+              r <- readBrokenBy blocksReader Bits16 (replicate 100 0.5) damage
+              assertLeft what r
+          )
+          [ ("усечённый файл прочитался", BS.take 100)
+          , ("нечётная длина прочиталась", \bs -> BS.concat [BS.take 40 bs, u32le 15, BS.drop 44 bs])
+          , ("чужой формат прочитался", \bs -> BS.concat [BS.take 20 bs, BS.pack [7, 0], BS.drop 22 bs])
+          , ("не RIFF прочитался", \bs -> BS.concat ["JUNK", BS.drop 4 bs])
+          ]
+    , -- Чужие файлы с тегом 0xFFFE читаются по подформату, а не отвергаются.
+      testCase "extensible читается по подформату" $
+        withSystemTempDirectory "hsig-test" $ \dir -> do
+          let path = dir </> "ext.wav"
+          BS.writeFile path (riffOf (extensibleFmt 1) (BS.concat [u16le 0x4000, u16le 0xC000]))
+          (r, ch, xs) <- readWav path
+          r @?= 4
+          ch @?= 1
+          U.length xs @?= 2
+          assertBool (show xs) (abs (xs U.! 0 - 0.5) < 1e-4)
+          assertBool (show xs) (abs (xs U.! 1 + 0.5) < 1e-4)
+    , testCase "extensible с чужим подформатом это ошибка" $
+        withSystemTempDirectory "hsig-test" $ \dir -> do
+          let path = dir </> "ext.wav"
+          BS.writeFile path (riffOf (extensibleFmt 7) (u16le 0))
+          try (readWav path) >>= assertLeft "чужой подформат прочитался"
+    , -- Обрезанная шапка extensible не должна читаться как мусор из-за
+      -- границы: GUID подформата лежит на 24-м байте.
+      testCase "короткая шапка extensible это ошибка" $
+        withSystemTempDirectory "hsig-test" $ \dir -> do
+          let path = dir </> "ext.wav"
+          BS.writeFile path (riffOf (BS.take 16 (extensibleFmt 1)) (u16le 0))
+          try (readWav path) >>= assertLeft "короткая шапка прочиталась"
     , testCase "не RIFF это ошибка" $ do
         r <- readBroken Bits16 [0.5] (\bs -> BS.concat ["JUNK", BS.drop 4 bs])
         assertLeft "не RIFF прочитался" r
+    ]
+
+-- | 16 бит little-endian как байты.
+u16le :: Int -> BS.ByteString
+u16le v = BS.take 2 (u32le v)
+
+-- | WAV с заданной шапкой fmt и данными.
+riffOf :: BS.ByteString -> BS.ByteString -> BS.ByteString
+riffOf fmt body =
+  BS.concat
+    [ "RIFF"
+    , u32le (4 + 8 + BS.length fmt + 8 + BS.length body)
+    , "WAVE"
+    , "fmt "
+    , u32le (BS.length fmt)
+    , fmt
+    , "data"
+    , u32le (BS.length body)
+    , body
+    ]
+
+-- | Шапка WAVE_FORMAT_EXTENSIBLE: 40 байт, настоящий формат в GUID
+-- подформата. Так ffmpeg пишет 24 бита и всё выше 48 кГц.
+extensibleFmt :: Int -> BS.ByteString
+extensibleFmt sub =
+  BS.concat
+    [ u16le 0xFFFE
+    , u16le 1
+    , u32le 4
+    , u32le 8
+    , u16le 2
+    , u16le 16
+    , u16le 22
+    , u16le 16
+    , u32le 0
+    , u16le sub
+    , BS.replicate 14 0
     ]
 
 -- | 32 бита little-endian как байты.
@@ -492,3 +566,9 @@ misc =
             Left e -> assertBool (show e) ("envRate" `isInfixOf` show e)
             Right _ -> assertFailure "ожидали ошибку"
     ]
+
+-- | Поблочная читалка в интерфейсе обычной: блоки склеиваются.
+blocksReader :: FilePath -> IO (Double, Int, U.Vector Double)
+blocksReader path = do
+  (r, ch, blocks) <- readWavBlocks 64 path
+  pure (r, ch, U.concat blocks)

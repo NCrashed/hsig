@@ -61,6 +61,40 @@ resampleTests =
         mapM_
           (\f -> assertBool (show (f, db f)) (db f < -120))
           [28000, 30000, 36000, 45000]
+    , -- Неудобное отношение это главный случай: у целого дробная часть
+      -- попадает ровно в строку таблицы ядер, и квантование фазы себя не
+      -- показывает. Без интерполяции между строками тут были бы образы на
+      -- уровне около -60 дБ.
+      testCase "44.1 в 48 кГц: полоса ровная, образов нет" $ do
+        let steady s = U.drop 9600 (render defaultEnv (takeSec 0.5 s))
+            up f = steady (resample 44100 (sine (constant f)))
+            level = rms
+            binAt xs g =
+              let ang i = 2 * pi * g * fromIntegral i / rate
+                  c = U.sum (U.imap (\i x -> x * cos (ang i)) xs)
+                  s = U.sum (U.imap (\i x -> x * sin (ang i)) xs)
+               in 2 * sqrt (c * c + s * s) / fromIntegral (U.length xs)
+            devDb f = 20 * logBase 10 (level (up f) / level (steady (sine (constant f))))
+            spurDb f =
+              let xs = up f
+                  others = [binAt xs g | g <- [200, 400 .. 20000], abs (g - f) > 400]
+               in 20 * logBase 10 (maximum others / binAt xs f)
+        mapM_
+          (\f -> assertBool (show (f, devDb f)) (abs (devDb f) < 0.01))
+          [100, 1000, 5000, 10000, 15000]
+        mapM_
+          (\f -> assertBool (show (f, spurDb f)) (spurDb f < -120))
+          [1000, 7000, 15000]
+    , -- Обещание "задержки не вносит": ядро центрировано на целевой позиции.
+      -- Иначе параллельные ветви графа разъедутся и в миксе появится
+      -- гребёнка.
+      testCase "задержки не вносит" $ do
+        let spike n = fromSamples (replicate n 0 <> [1] <> replicate 400 0)
+            peakAt from n = U.maxIndex (render defaultEnv (resample from (spike n)))
+        -- Вход вдвое быстрее: сотый входной сэмпл это пятидесятый выходной.
+        peakAt (2 * rate) 100 @?= 50
+        -- И наоборот.
+        peakAt (rate / 2) 100 @?= 200
     , -- И обратно: подъём не должен рождать образов выше исходной полосы.
       testCase "при повышении нет ничего сверху" $ do
         let mags = spectrum (render defaultEnv (takeSec 1 (resample 8000 (sine 1000))))

@@ -101,6 +101,16 @@ playTests =
             xs = render defaultEnv (takeSec 2 p)
         assertBool "удвоилось" (U.maximum xs < 1.5)
         assertBool "не прозвучало" (U.maximum xs > 0.5)
+    , -- Инвариант блоков: все блоки ровно по envBlock. Держит вторую половину
+      -- условия в overlapAdd (длина хвоста не меньше блока): без неё в паузе
+      -- после короткой ноты выдался бы обрезанный блок, и всё дальше уехало
+      -- бы по времени, потому что смещение ноты считается от номера блока.
+      testCase "блоки ровно по envBlock" $ do
+        let p = play blip (fastcat [pure (noteOf 100), silence])
+            blocks = take 30 (runSig p defaultEnv)
+        assertBool (show (map U.length blocks)) (all ((== envBlock defaultEnv) . U.length) blocks)
+        -- И то же по существу: результат не зависит от нарезки.
+        render defaultEnv (takeSec 2 p) @?= render defaultEnv {envBlock = 97} (takeSec 2 p)
     , -- У аналогового события нет целого отрезка, значит нет ни атаки, ни
       -- длительности: планировщик обязан его пропускать, как eventHasOnset в
       -- Tidal. Иначе длина ноты бралась бы из части, то есть из размера
@@ -131,9 +141,12 @@ stemTests =
         withSystemTempDirectory "hsig-test" $ \dir -> do
           path <- renderStem defaultEnv 0.1 dir (stemOf "bass" "v1" (takeSec 0.1 (sine 200 * 0.5)))
           doesFileExist path >>= assertBool "файла нет"
+          -- Имя это <имя>-<сэмплов>-<хэш>.wav: длина в имени нужна уборке,
+          -- чтобы не считать устаревшим стем другой длины.
           let name = takeFileName path
-          assertBool name ("bass-" `isInfixOf` name)
-          assertBool name (length name == length "bass-" + 8 + length ".wav")
+              samples = show (round (0.1 * rate) :: Int)
+          assertBool name (("bass-" <> samples <> "-") `isInfixOf` name)
+          assertBool name (length name == length "bass-" + length samples + 1 + 8 + length ".wav")
     , -- Ключ кэша считается от спецификации: её меняют, чтобы заставить
       -- перерендерить.
       testCase "разная спецификация даёт разные файлы" $
@@ -290,18 +303,35 @@ stemTests =
               -- отдельно; второй вызов на уже отрендеренном просто их вернёт.
               stemOne spec = renderStem defaultEnv 0.02 dir (stemOf "one" spec (constant 0.1))
           old <- stemOne "v1"
+          -- Путь свежего стема берём до рендера, иначе renderStem создаст его
+          -- сам и проверка "новый жив" станет тавтологией.
+          new <- stemOne "v2"
           writeFile (dir </> "one-notahash.wav") "чужое"
           writeFile (dir </> "one-1a2b3c4d.txt") "чужое"
           writeFile (dir </> "other-1a2b3c4d.wav") "чужое"
           writeFile (dir </> "one.wav") "чужое"
           _ <- renderTrack defaultEnv 0.02 mix (track "v2")
-          new <- stemOne "v2"
           assertBool "хэш не сменился" (old /= new)
           doesFileExist old >>= assertBool "старый стем остался" . not
-          doesFileExist new >>= assertBool "нового стема нет"
+          doesFileExist new >>= assertBool "уборка снесла свежий стем"
           mapM_
             (\f -> doesFileExist (dir </> f) >>= assertBool ("снесли " <> f))
             ["one-notahash.wav", "one-1a2b3c4d.txt", "other-1a2b3c4d.wav", "one.wav"]
+    , -- Превью и полный прогон не должны сносить кэш друг друга: длина стоит
+      -- в имени файла, поэтому уборка их различает.
+      testCase "другая длина не считается устаревшей" $
+        withSystemTempDirectory "hsig-test" $ \dir -> do
+          let mix = dir </> "mix.wav"
+              track = [stemOf "one" "v1" (constant 0.1)]
+          short <- renderStem defaultEnv 0.02 dir (stemOf "one" "v1" (constant 0.1))
+          _ <- renderTrack defaultEnv 0.05 mix track
+          doesFileExist short >>= assertBool "короткий стем снесли"
+    , -- Пустой список стемов это отладочный случай (закомментировали всё):
+      -- уборка не должна на нём падать, даже если каталога ещё нет.
+      testCase "пустой трек не падает на уборке" $
+        withSystemTempDirectory "hsig-test" $ \dir -> do
+          out <- renderTrack defaultEnv 0.02 (dir </> "empty" </> "mix.wav") []
+          doesFileExist out >>= assertBool "мастер не записан"
     , -- Требование разд. 12: два рендера дают побитово одинаковый файл.
       -- Стемов несколько, потому что рендерятся они параллельно.
       testCase "рендер детерминирован" $
