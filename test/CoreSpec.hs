@@ -24,6 +24,7 @@ tests =
     , edges
     , laziness
     , sharing
+    , mixing
     ]
 
 -- Генераторы -----------------------------------------------------------
@@ -294,4 +295,27 @@ sharing =
         let s = share (takeSec 1 (constant 1))
         length (samples defaultEnv s) @?= 48000
         length (samples defaultEnv {envRate = 44100} s) @?= 44100
+    ]
+
+-- | Сумма списка сигналов. Отдельно от arithmetic, потому что ловит не
+-- арифметику, а ловушку нейтрального элемента.
+mixing :: TestTree
+mixing =
+  testGroup
+    "mix"
+    [ -- Обрезка тут не для длины, а чтобы испорченная реализация падала, а
+      -- не вешала прогон: у sum пустой микс это бесконечная константа.
+      testCase "пустой микс это пустой сигнал" $
+        U.length (render defaultEnv (takeSec 1 (mix []))) @?= 0
+    , testCase "складывает и тянется по самому длинному" $ do
+        let xs = render defaultEnv (takeSec 1 (mix [takeSec 0.01 (constant 1), takeSec 0.02 (constant 0.5)]))
+        U.length xs @?= 960
+        xs U.! 0 @?= 1.5
+        xs U.! 700 @?= 0.5
+    , -- Ловушка, ради которой mix и заведён: у sum нейтральный элемент это
+      -- литеральный 0, то есть бесконечная константа, и микс из конечных нот
+      -- стал бы бесконечным. Проверяем, что длина осталась от материала.
+      testCase "нейтральный элемент не удлиняет микс" $ do
+        let xs = render defaultEnv (takeSec 10 (mix [takeSec 0.01 (constant 1)]))
+        U.length xs @?= 480
     ]

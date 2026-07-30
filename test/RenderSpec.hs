@@ -350,7 +350,7 @@ stemTests =
       -- отдельным тестом ниже.
       testCase "уборка не трогает чужие файлы" $
         withSystemTempDirectory "hsig-test" $ \dir -> do
-          let mix = dir </> "mix.wav"
+          let mixPath = dir </> "mix.wav"
               track spec = [stemOf "one" spec 0.02 (constant 0.1)]
               -- renderTrack отдаёт путь мастера, поэтому путь стема берём
               -- отдельно; второй вызов на уже отрендеренном просто его вернёт.
@@ -363,7 +363,7 @@ stemTests =
           writeFile (dir </> "one-1a2b3c4d.txt") "чужое"
           writeFile (dir </> "other-1a2b3c4d.wav") "чужое"
           writeFile (dir </> "one.wav") "чужое"
-          _ <- renderTrack defaultEnv mix (track "v2")
+          _ <- renderTrack defaultEnv mixPath (track "v2")
           assertBool "хэш не сменился" (old /= new)
           doesFileExist new >>= assertBool "уборка снесла свежий стем"
           mapM_
@@ -473,12 +473,12 @@ stemTests =
       testCase "бесконечный мастер это ошибка" $
         withSystemTempDirectory "hsig-test" $ \dir -> do
           let env = defaultEnv {envRate = 100, envBlock = 64, envMaxSec = 1}
-              mix = dir </> "mix.wav"
-          r <- try (renderTrackWith env mix (bothChannels (+ constant 0.01)) [stem "one" (takeSec 0.5 (constant 0.1))])
+              mixPath = dir </> "mix.wav"
+          r <- try (renderTrackWith env mixPath (bothChannels (+ constant 0.01)) [stem "one" (takeSec 0.5 (constant 0.1))])
           case r :: Either IOException FilePath of
             Left err -> assertBool (show err) ("мастер" `isInfixOf` show err)
             Right _ -> assertFailure "ожидали ошибку"
-          doesFileExist mix >>= assertBool "остался обрубок мастера" . not
+          doesFileExist mixPath >>= assertBool "остался обрубок мастера" . not
     , -- Мастер применяется к сумме, а не к каждому стему. С линейным
       -- усилением разницы нет, поэтому мастер нелинейный, а стемов два.
       testCase "мастер применяется к сумме, а не к стемам" $
@@ -593,7 +593,9 @@ stemTests =
       -- увёл бы запись в предел WAV.
       testCase "пустой микс конечен" $ do
         sig <- mixStems defaultEnv []
-        U.length (render defaultEnv sig) @?= 0
+        -- Обрезка не для длины, а чтобы испорченная реализация падала, а не
+        -- вешала прогон.
+        U.length (render defaultEnv (takeSec 1 sig)) @?= 0
     , -- Панорама вне диапазона это опечатка (panned 35 вместо 0.35), а
       -- молчаливый зажим её прятал бы.
       testCase "панорама вне диапазона это ошибка" $ do

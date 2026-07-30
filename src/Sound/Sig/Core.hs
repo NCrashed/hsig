@@ -30,6 +30,7 @@ module Sound.Sig.Core
   , PadMode (..)
   , zipChunks
   , mapSig
+  , mix
   , takeSec
   , padSec
   , rechunk
@@ -131,6 +132,16 @@ zipChunks mode f (Sig ga) (Sig gb) = Sig $ \env ->
 -- | Поэлементная унарная операция.
 mapSig :: (Double -> Double) -> Fx
 mapSig f (Sig g) = Sig $ \env -> map (U.map f) (g env)
+
+-- | Сумма списка сигналов: длина по самому длинному, пустой список это
+-- пустой сигнал.
+--
+-- sum для этого не годится, и это неочевидно: его нейтральный элемент это
+-- литеральный 0, то есть бесконечная константа (разд. 3), поэтому сумма
+-- конечных нот вышла бы бесконечной и запись упёрлась бы в предел WAV.
+mix :: [Sig] -> Sig
+mix [] = fromSamples []
+mix (s : ss) = foldl' (+) s ss
 
 -- | Перебивает поток на блоки по n сэмплов, восстанавливая инвариант.
 rechunk :: Int -> Chunks -> Chunks

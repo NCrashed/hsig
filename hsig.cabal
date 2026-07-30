@@ -83,13 +83,40 @@ executable demo
     , base
     , hsig
 
+executable book
+  import:         opts
+
+  -- Примеры книги пишутся тем же языком, что трек (разд. 10 дизайна).
+  default-extensions: OverloadedStrings
+  hs-source-dirs:     book
+  main-is:            Main.hs
+  other-modules:
+    Book.Ch01
+    Book.Ch02
+    Book.Ch03
+    Book.Ch04
+    Book.Prelude
+
+  -- -M2g: промах в примере (забытое окно) обязан падать по куче, а не
+  -- выедать машину. Примеры короткие, столько им не нужно никогда.
+  ghc-options:    -threaded -rtsopts "-with-rtsopts=-N -M2g"
+  build-depends:
+    , base
+    , directory
+    , filepath
+    , hsig
+
 test-suite hsig-test
   import:         opts
   type:           exitcode-stdio-1.0
   hs-source-dirs: test patches
   main-is:        Main.hs
-  ghc-options:    -threaded -rtsopts -with-rtsopts=-N
+
+  -- -M4g: бесконечный сигнал в тесте обязан падать по куче, а не вешать
+  -- машину. Ни один честный тест столько не просит.
+  ghc-options:    -threaded -rtsopts "-with-rtsopts=-N -M4g"
   other-modules:
+    BookSpec
     CoreSpec
     DelaySpec
     DynamicsSpec

@@ -1,6 +1,7 @@
 -- | Точка входа тестов.
 module Main (main) where
 
+import BookSpec qualified
 import CoreSpec qualified
 import DelaySpec qualified
 import DynamicsSpec qualified
@@ -40,4 +41,5 @@ main =
       , RenderSpec.tests
       , LeadSpec.tests
       , WavSpec.tests
+      , BookSpec.tests
       ]

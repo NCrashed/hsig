@@ -284,11 +284,7 @@ stemHash env spec s = pad (showHex (foldl step 7 parts `mod` 0x100000000) "")
 mixStems :: Env -> [FilePath] -> IO Sig
 mixStems env paths = do
   parts <- mapM (readStem env) paths
-  -- Складываем без нейтрального элемента: литеральный 0 бесконечен и
-  -- растянул бы микс.
-  pure $ case parts of
-    [] -> fromSamples []
-    p : ps -> foldl (+) p ps
+  pure (mix parts)
 
 -- | То же с панорамой: каждый стем ставится в своё место образа.
 mixStemsStereo :: Env -> [(Double, FilePath)] -> IO Stereo
