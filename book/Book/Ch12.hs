@@ -4,6 +4,7 @@ module Book.Ch12
   , pad
   , reverb
   , loop
+  , dryPad
   ) where
 
 import Book.Prelude
@@ -33,5 +34,11 @@ loop = bothChannels (* gate 0.05 20) (mixStereo [orbit angle wet, mono (dry * 0.
     wet = reverb dry * 0.9
     angle = 2 * pi * 0.05 * line [(0, 0), (20, 20)]
 
+dryPad :: Sig
+dryPad = mix [delay t (pad f 12) | (t, f) <- [(0, 110), (3, 164.81)]] * gate 0.05 18
+
 examples :: [Example]
-examples = [exampleWide "12-ambient" loop]
+examples =
+  [ exampleWide "12-ambient" loop
+  , example "12-dry" dryPad
+  ]

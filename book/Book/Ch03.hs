@@ -6,6 +6,7 @@ module Book.Ch03
   , kick
   , riff
   , plucked
+  , byHand
   ) where
 
 import Book.Prelude
@@ -31,9 +32,16 @@ plucked n =
     * adsr 0.002 0.12 0.2 0.15 (noteDur n)
     * constant (noteAmp n * 0.3)
 
+byHand :: Sig
+byHand = mix [delay (0.3 * fromIntegral i) (plucked (note f d)) | (i, (f, d)) <- zip [0 :: Int ..] score]
+  where
+    note f d = (noteOf f) {noteDur = d}
+    score = [(220, 0.28), (261.63, 0.28), (329.63, 0.55), (220, 0.9)]
+
 examples :: [Example]
 examples =
   [ example "03-riff" riff
   , example "03-pad" (mix [pad f | f <- [110, 164.81, 220]])
   , example "03-kick" (mix [delay (0.5 * fromIntegral i) kick | i <- [0 :: Int .. 3]])
+  , example "03-plucked" byHand
   ]
