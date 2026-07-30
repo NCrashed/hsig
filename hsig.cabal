@@ -115,6 +115,7 @@ executable book
     Book.Ch11
     Book.Ch12
     Book.Ch13
+    Book.Ch14
     Book.Prelude
     Lead
 

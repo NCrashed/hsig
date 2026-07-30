@@ -11,7 +11,7 @@ import Book.Prelude
 import Sound.Sig
 
 driven :: Fx -> Sig
-driven fx = fx (saw 1493 * 0.6) * 0.8 * gate 0.01 3
+driven fx = svf 8000 0.3 (fx (saw 1493 * 0.45)) * 0.5 * gate 0.01 2
 
 soft :: Sig
 soft = shaper 6 (saw 110 * 0.4) * gate 0.01 2
