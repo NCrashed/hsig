@@ -556,8 +556,8 @@ main = renderTrackWith defaultEnv "out/track.wav" master track >>= putStrLn
    `undegradeBy`, `ply`, `iter`, `palindrome`, `whenmod`.
 2. Мини-нотация (сделано): `!` (повтор), `@` (вес доли), `(k,n,rot)` прямо
    в строке, полиметр `{a b, c d e}%n`, `.` как быстрая группировка,
-   диапазоны `0 .. 3`. Осталось: аккорды в строке и паттерны в аргументах
-   евклида.
+   диапазоны `0 .. 3`. Аккорды в строке приехали с партией 4. Осталось:
+   паттерны в аргументах евклида (`"bd(<3 5>,8)"`).
 3. Время и выбор (сделано): `within`, `inside`, `swingBy`, `playWhen`, `zoom`,
    `linger`, `trunc`, `chunk`, `rot`, `run`, `someCyclesBy`, `randcat`,
    `wrandcat`, `shuffle`, `scramble`. Нарезка и выбор по циклам пришли из
