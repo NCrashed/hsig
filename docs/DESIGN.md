@@ -130,7 +130,8 @@ src/Sound/Sig/Nonlin.hs      tanh-шейпер, асимметричный ку�
 src/Sound/Sig/Resample.hs    проектирование FIR (Kaiser), полифазный up/down, oversample
 src/Sound/Sig/Delay.hs       линия задержки, comb, allpass, чорус
 src/Sound/Sig/Dynamics.hs    компрессор, гейт, сайдчейн
-src/Sound/Sig/Score.hs       Note, Pattern, запрос событий
+src/Sound/Sig/Score.hs       Note, Pattern, запрос событий, мини-нотация
+src/Sound/Sig/Harmony.hs     таблицы ладов и аккордов
 src/Sound/Sig/Render.hs      overlap-add планировщик, стемы, микс
 src/Sound/Sig/IO.hs          запись WAV, дизеринг
 src/Sound/Sig.hs             реэкспорт
@@ -561,7 +562,9 @@ main = renderTrackWith defaultEnv "out/track.wav" master track >>= putStrLn
    `linger`, `trunc`, `chunk`, `rot`, `run`, `someCyclesBy`, `randcat`,
    `wrandcat`, `shuffle`, `scramble`. Нарезка и выбор по циклам пришли из
    нужд даунтемпо (глава 16) и IDM (глава 17).
-4. Высоты: лады (`scale`), арпеджиатор (`arp`), разбор аккордов в строке.
+4. Высоты (сделано): лады (`scale` и таблица в `Sound.Sig.Harmony`),
+   аккорды в строке (`"c4'maj"`), арпеджиатор (`arp` с порядками up, down,
+   updown, downup, thumbup). Глава 18 книги.
 5. Паттерны параметров. В Tidal параметр патча патчится так же, как ноты
    (`# cutoff "400 800"`). У нас параметры это `Sig`, поэтому нужен мост
    «паттерн значений - сигнал»: это отдельное дизайн-решение, а не

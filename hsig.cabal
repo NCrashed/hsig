@@ -48,6 +48,7 @@ library
     Sound.Sig.Dynamics
     Sound.Sig.Envelope
     Sound.Sig.Filter
+    Sound.Sig.Harmony
     Sound.Sig.IO
     Sound.Sig.Nonlin
     Sound.Sig.Osc
@@ -119,6 +120,7 @@ executable book
     Book.Ch15
     Book.Ch16
     Book.Ch17
+    Book.Ch18
     Book.Prelude
     Lead
 

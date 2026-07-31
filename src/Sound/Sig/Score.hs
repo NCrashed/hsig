@@ -80,14 +80,17 @@ module Sound.Sig.Score
   , notes
   , noteHzOf
   , noteHz
+  , scale
+  , arp
   ) where
 
 import Data.Char (isDigit, isSpace, toLower)
-import Data.List (sortOn)
+import Data.List (groupBy, sortOn)
 import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Ratio (denominator, numerator, (%))
 import Data.String (IsString (..))
 import Sound.Sig.Core (Sig)
+import Sound.Sig.Harmony (chordSemitones, degreeSemitones, scaleSemitones)
 import Sound.Sig.Random (doubleAt)
 
 -- | Время в циклах. Рациональное: деления обязаны быть точными.
@@ -973,21 +976,94 @@ noteHzOf src = do
 -- 'noteHz' в параметрах патча, наоборот, падает. Амплитуда всегда единичная,
 -- синтаксиса под неё нет: меняют её через @fmap@.
 notes :: String -> Pattern Note
-notes = fmap toNote . parsePat
+notes src = parsePat src >>= expand
   where
-    toNote w = (noteOf (freqOf w)) {noteLabel = w}
+    -- Аккорд это несколько нот в одном отрезке, поэтому слово разворачивается
+    -- в паттерн, а не в значение: fmap тут не хватило бы.
+    expand w = case chordOf w of
+      Just ns -> stack (map pure ns)
+      Nothing -> pure ((noteOf (freqOf w)) {noteLabel = w})
     freqOf w = case noteHzOf w of
       Just f -> f
       Nothing -> case reads w of
         [(v, "")] -> v
         _ -> 0
 
--- | Строка это паттерн нот: @"a1 ~ a1 c2"@, @"bd*4"@, @"55 73.42"@.
+-- | Аккорд из слова вида @c4'maj@: основа, апостроф, имя аккорда.
+chordOf :: String -> Maybe [Note]
+chordOf w = case break (== '\'') w of
+  (root, '\'' : name) -> do
+    base <- noteHzOf root
+    steps <- chordSemitones name
+    pure [(noteOf (base * 2 ** (fromIntegral s / 12))) {noteLabel = w} | s <- steps]
+  _ -> Nothing
+
+-- | Строка это паттерн нот: @"a1 ~ a1 c2"@, @"bd*4"@, @"55 73.42"@,
+-- @"c4'maj"@.
 instance IsString (Pattern Note) where
   fromString = notes
+
+-- | Строка это паттерн чисел: ступени лада и вообще любые числовые
+-- параметры пишутся так же, как ритм.
+instance IsString (Pattern Double) where
+  fromString = numbers
 
 -- | Частота по имени ноты, для параметров патчей: там паттерна нет, а имена
 -- читаются лучше герцев. Незнакомое имя это опечатка автора, поэтому падает
 -- сразу, а не подставляет тишину.
 noteHz :: String -> Double
 noteHz src = fromMaybe (error ("hsig: не нота: " <> src)) (noteHzOf src)
+
+-- | Ступени лада в ноты от заданной основы: @scale "minor" "a3" "0 2 4"@.
+--
+-- Ступени целые и могут выходить за октаву в обе стороны (см.
+-- 'degreeSemitones'), поэтому мелодию двигают прибавлением числа, а не
+-- переписыванием нот.
+scale :: String -> String -> Pattern Double -> Pattern Note
+scale name root = fmap step
+  where
+    steps = fromMaybe (bad ("нет такого лада: " <> name)) (scaleSemitones name)
+    base = noteHz root
+    step d = noteOf (base * 2 ** (fromIntegral (degreeSemitones steps (round d)) / 12))
+
+-- | Разворачивает одновременные ноты в последовательность внутри их же
+-- отрезка: @arp "up" "c4'maj"@.
+--
+-- Порядки: @up@, @down@, @updown@ (вверх и обратно без повтора краёв),
+-- @downup@, @thumbup@ (нижняя нота через одну).
+arp :: String -> Pattern a -> Pattern a
+arp mode p = splitQueries (Pattern go)
+  where
+    go a = concatMap (mapMaybe (clip a) . spread) (groupsIn (Arc (sam (arcStart a)) (sam (arcStart a) + 1)))
+    groupsIn cyc = groupBy sameWhole (sortOn (fmap arcStart . eventWhole) (queryArc p cyc))
+    sameWhole x y = eventWhole x == eventWhole y
+    spread evs = case eventWhole (head' evs) of
+      Nothing -> evs
+      Just (Arc ws we) ->
+        [ e {eventWhole = Just (Arc s t), eventPart = Arc s t}
+        | (i, e) <- zip [0 :: Int ..] ordered
+        , let s = ws + fromIntegral i * step
+        , let t = s + step
+        ]
+        where
+          ordered = order mode evs
+          step = (we - ws) / fromIntegral (max 1 (length ordered))
+    head' (e : _) = e
+    head' [] = bad "пустая группа в arp"
+    clip q e = do
+      part <- subArc (eventPart e) q
+      pure e {eventPart = part}
+
+-- | Порядок обхода нот аккорда.
+order :: String -> [a] -> [a]
+order mode evs = case mode of
+  "up" -> evs
+  "down" -> reverse evs
+  "updown" -> evs <> drop 1 (reverse (drop 1 evs))
+  "downup" -> reverse evs <> drop 1 (drop 1 evs)
+  "thumbup" -> concat [[low, e] | e <- drop 1 evs]
+  _ -> bad ("нет такого порядка арпеджио: " <> mode)
+  where
+    low = case evs of
+      e : _ -> e
+      [] -> bad "пустой аккорд"

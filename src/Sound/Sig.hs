@@ -8,6 +8,7 @@ module Sound.Sig
   , module Sound.Sig.Delay
   , module Sound.Sig.Dynamics
   , module Sound.Sig.Resample
+  , module Sound.Sig.Harmony
   , module Sound.Sig.Score
   , module Sound.Sig.Render
   , module Sound.Sig.Stereo
@@ -19,6 +20,7 @@ import Sound.Sig.Delay
 import Sound.Sig.Dynamics
 import Sound.Sig.Envelope
 import Sound.Sig.Filter
+import Sound.Sig.Harmony
 import Sound.Sig.IO
 import Sound.Sig.Nonlin
 import Sound.Sig.Osc

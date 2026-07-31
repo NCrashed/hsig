@@ -20,6 +20,7 @@ import Book.Ch14 qualified as Ch14
 import Book.Ch15 qualified as Ch15
 import Book.Ch16 qualified as Ch16
 import Book.Ch17 qualified as Ch17
+import Book.Ch18 qualified as Ch18
 import Book.Prelude (renderExamples)
 
 main :: IO ()
@@ -43,5 +44,6 @@ main =
         , Ch15.examples
         , Ch16.examples
         , Ch17.examples
+        , Ch18.examples
         ]
     )

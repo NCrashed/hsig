@@ -7,6 +7,7 @@ import Control.Exception (ErrorCall, evaluate, try)
 import Data.List (isInfixOf, sortOn)
 import Data.Ratio ((%))
 import Data.String (fromString)
+import Sound.Sig.Harmony (degreeSemitones)
 import Sound.Sig.Score
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -18,6 +19,7 @@ tests =
     [ atomTests
     , noteTests
     , syntaxTests
+    , harmonyTests
     , groupTests
     , errorTests
     ]
@@ -247,4 +249,66 @@ syntaxTests =
         map fst (shape "{bd, hh cp}" (1, 2)) @?= ["bd", "cp"]
     , testCase "диапазон разворачивается" $
         map fst (shape "0 .. 3" (0, 1)) @?= ["0", "1", "2", "3"]
+    ]
+
+-- | Частоты событий в порядке времени, округлённые до сотых.
+freqsOf :: Pattern Note -> (Time, Time) -> [Double]
+freqsOf p arc =
+  [ fromIntegral (round (noteFreq (eventValue e) * 100) :: Int) / 100
+  | e <- sortOn (arcStart . eventPart) (q p arc)
+  ]
+
+harmonyTests :: TestTree
+harmonyTests =
+  testGroup
+    "лады и аккорды"
+    [ -- Ступени лада в полутонах: ноль это основа, седьмая ступень
+      -- семиступенного лада это октава, отрицательные идут вниз.
+      testCase "ступени переносятся через октаву" $ do
+        map (degreeSemitones [0, 2, 4, 5, 7, 9, 11]) [0, 2, 6, 7, 8] @?= [0, 4, 11, 12, 14]
+        map (degreeSemitones [0, 2, 3, 5, 7, 8, 10]) [-1, -7] @?= [-2, -12]
+    , testCase "минор и мажор отличаются третьей ступенью" $ do
+        map (degreeSemitones [0, 2, 4, 5, 7, 9, 11]) [0, 2, 4] @?= [0, 4, 7]
+        map (degreeSemitones [0, 2, 3, 5, 7, 8, 10]) [0, 2, 4] @?= [0, 3, 7]
+    , -- scale переводит ступени в частоты от основы.
+      testCase "scale строит трезвучие" $ do
+        let got = freqsOf (scale "minor" "a3" "0 2 4") (0, 1)
+            -- Квинта равномерной темперации это 2**(7/12), а не 3/2:
+            -- расхождение с чистым строем почти два цента.
+            want = [220 * 2 ** (s / 12) | s <- [0, 3, 7]]
+        assertBool (show got) (and (zipWith (\a b -> abs (a - b) < 0.02) got want))
+    , testCase "ступень 7 это октава" $ do
+        case freqsOf (scale "major" "a3" "0 7") (0, 1) of
+          [root, octave] -> assertBool (show (root, octave)) (abs (octave - 2 * root) < 0.02)
+          other -> assertFailure (show other)
+    , -- Аккорд в строке даёт несколько нот в одном отрезке.
+      testCase "аккорд это одновременные ноты" $ do
+        let evs = q ("c4'maj" :: Pattern Note) (0, 1)
+        length evs @?= 3
+        map (fmap (\(Arc s e) -> (s, e)) . eventWhole) evs @?= replicate 3 (Just (0, 1))
+        case map (noteFreq . eventValue) evs of
+          got@(root : _) -> assertBool (show got) (and (zipWith (\a b -> abs (a / root - b) < 1e-3) got [1, 2 ** (4 / 12), 2 ** (7 / 12)]))
+          other -> assertFailure (show other)
+    , testCase "минорный и септаккорд" $ do
+        length (q ("a3'min" :: Pattern Note) (0, 1)) @?= 3
+        length (q ("a3'min7" :: Pattern Note) (0, 1)) @?= 4
+        length (q ("a3'nine" :: Pattern Note) (0, 1)) @?= 5
+    , testCase "аккорды живут в общем паттерне" $
+        length (q ("c4'maj e4'min" :: Pattern Note) (0, 1)) @?= 6
+    , -- Арпеджио разворачивает аккорд в последовательность внутри отрезка.
+      testCase "arp up раскладывает по порядку" $ do
+        let evs = sortOn (arcStart . eventPart) (q (arp "up" ("c4'maj" :: Pattern Note)) (0, 1))
+        length evs @?= 3
+        map (arcStart . eventPart) evs @?= [0, 1 / 3, 2 / 3]
+        case map (noteFreq . eventValue) evs of
+          [a, b, c] -> assertBool (show [a, b, c]) (a < b && b < c)
+          other -> assertFailure (show other)
+    , testCase "arp down переворачивает" $ do
+        case map (noteFreq . eventValue) (sortOn (arcStart . eventPart) (q (arp "down" ("c4'maj" :: Pattern Note)) (0, 1))) of
+          [a, b, c] -> assertBool (show [a, b, c]) (a > b && b > c)
+          other -> assertFailure (show other)
+    , testCase "updown идёт вверх и обратно без повтора краёв" $
+        length (q (arp "updown" ("c4'maj" :: Pattern Note)) (0, 1)) @?= 4
+    , testCase "arp не трогает одиночные ноты" $
+        length (q (arp "up" ("a3 c4" :: Pattern Note)) (0, 1)) @?= 2
     ]
