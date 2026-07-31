@@ -38,7 +38,7 @@
 - задержки `delay`/`vdelay`/`comb`/`allpass`, динамика `compress`/`sidechain`;
 - партитура с семантикой Tidal и мини-нотацией строками (`"bd*4"`, `"a1 ~ c2"`);
 - стерео: панорама, `orbit` (параметрическое вращение), бинауральная свёртка
-  на измеренных HRTF (KEMAR), стерео-инструменты;
+  на измеренных HRTF (KEMAR, полусфера с элевациями), стерео-инструменты;
 - стемы с кэшем, параллельный рендер, сведение и мастер-обработка;
 - запись WAV 16/24 бита и float32 с дизерингом и отчётом о клиппинге.
 
@@ -52,7 +52,7 @@ git clone https://github.com/NCrashed/hsig
 cd hsig
 nix develop            # шелл с GHC 9.10, cabal, HLS, hlint, fourmolu
 cabal build all
-cabal test             # 583 теста
+cabal test             # 589 тестов
 cabal run demo         # out/track.wav: демо-трек на 16 тактов
 cabal run book         # out/book/*.wav: все примеры книги
 cabal run minimal      # out/minimal.wav: самый маленький трек
@@ -144,7 +144,7 @@ cabal run book && tools/book-audio.sh
 ```
 
 CI (`.github/workflows/ci.yml`) делает то же самое, что можно сделать руками:
-`nix flake check` (сборка и 583 теста в песочнице), `hlint`, проверка
+`nix flake check` (сборка и 589 тестов в песочнице), `hlint`, проверка
 форматирования Haskell и Nix, рендер демо-трека с проверкой размера файла.
 Готовый `out/track.wav` остаётся артефактом прогона, так что результат сборки
 можно послушать, ничего не собирая.

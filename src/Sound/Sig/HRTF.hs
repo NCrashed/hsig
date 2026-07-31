@@ -18,17 +18,21 @@ module Sound.Sig.HRTF
   , loadHrtf
   , loadHrtfEnv
   , dirCount
+  , planeCount
+  , elevations
   , dirAt
   , delayAt
   , binaural
   ) where
 
-import Control.Monad (forM, unless)
+import Control.Monad (forM, unless, when)
 import Control.Monad.ST (runST)
 import Data.Bifunctor (bimap)
 import Data.Bits (shiftL, (.|.))
 import Data.ByteString qualified as BS
+import Data.Char (isDigit)
 import Data.Int (Int16)
+import Data.List (sortOn, stripPrefix)
 import Data.Maybe (fromMaybe)
 import Data.Vector qualified as V
 import Data.Vector.Unboxed qualified as U
@@ -37,9 +41,10 @@ import Sound.Sig.Core
 import Sound.Sig.Delay (vdelay)
 import Sound.Sig.Resample (resample)
 import Sound.Sig.Stereo (Stereo (..))
-import System.Directory (doesDirectoryExist)
+import System.Directory (listDirectory)
 import System.Environment (lookupEnv)
 import System.FilePath ((</>))
+import Text.Read (readMaybe)
 
 -- | Пара откликов для одного направления. Задержка вынесена из самого
 -- отклика: без этого линейная интерполяция между соседними направлениями
@@ -52,47 +57,84 @@ data Dir = Dir
   , dirDelayR :: !Double
   }
 
--- | Набор для горизонтальной плоскости: направления идут по кругу с
--- постоянным шагом, начиная с фронта.
-data Hrtf = Hrtf
-  { hrtfRate :: !Double
-  , hrtfDirs :: !(V.Vector Dir)
+-- | Набор для полусферы: плоскости по элевациям, в каждой свой шаг по
+-- азимуту.
+data Plane = Plane
+  { planeElev :: !Double
+  -- ^ элевация в градусах
+  , planeAz :: !(U.Vector Double)
+  -- ^ азимуты по кругу в градусах, по возрастанию
+  , planeDirs :: !(V.Vector Dir)
   }
 
--- | Сколько направлений в наборе.
+data Hrtf = Hrtf
+  { hrtfRate :: !Double
+  , hrtfPlanes :: !(V.Vector Plane)
+  -- ^ по возрастанию элевации
+  }
+
+-- | Сколько направлений в наборе всего.
 dirCount :: Hrtf -> Int
-dirCount = V.length . hrtfDirs
+dirCount h = sum [V.length (planeDirs p) | p <- V.toList (hrtfPlanes h)]
 
--- | Шаг измерений компактного набора KEMAR по азимуту.
-azimuthStep :: Int
-azimuthStep = 5
+-- | Сколько плоскостей (элеваций).
+planeCount :: Hrtf -> Int
+planeCount = V.length . hrtfPlanes
 
--- | Загружает горизонтальную плоскость набора и пересчитывает её на частоту
--- окружения.
+-- | Элевации набора, по возрастанию.
+elevations :: Hrtf -> [Double]
+elevations h = [planeElev p | p <- V.toList (hrtfPlanes h)]
+
+-- | Загружает всю полусферу набора и пересчитывает её на частоту окружения.
+--
+-- Сетка неравномерная: внизу измерений много (шаг 5 градусов), к зениту всё
+-- меньше, а в самом зените одно направление. Поэтому азимуты читаются из
+-- имён файлов, а не считаются шагом.
 --
 -- Компактный набор хранит только правое полушарие (азимуты 0..180): левое
 -- получается перестановкой ушей, потому что голова симметрична. Так же
 -- рекомендуют делать сами авторы набора.
 loadHrtf :: Env -> FilePath -> IO Hrtf
 loadHrtf env root = do
-  let dir = root </> "elev0"
-  ok <- doesDirectoryExist dir
-  unless ok (ioError (userError (dir <> ": нет каталога elev0, это не набор KEMAR")))
-  half <- forM [0, azimuthStep .. 180] $ \az -> do
-    bytes <- BS.readFile (dir </> fileName az)
-    pure (splitStereo bytes)
-  let measured = map (bimap (prep env) (prep env)) half
-      -- Зеркало: источник слева это тот же отклик с переставленными ушами.
-      mirrored = reverse (drop 1 (init measured))
-      round' = measured <> map (\(l, r) -> (r, l)) mirrored
-  pure
-    Hrtf
-      { hrtfRate = envRate env
-      , hrtfDirs = V.fromList [Dir (snd l) (snd r) (fst l) (fst r) | (l, r) <- round']
-      }
+  dirs <- listDirectory root
+  let elevs = sortOn fst [(e, root </> d) | d <- dirs, Just e <- [elevOf d]]
+  when (null elevs) (ioError (userError (root <> ": нет каталогов elevNN, это не набор KEMAR")))
+  planes <- mapM (loadPlane env) elevs
+  pure Hrtf {hrtfRate = envRate env, hrtfPlanes = V.fromList planes}
   where
-    fileName az = "H0e" <> pad (show az) <> "a.dat"
-    pad s = replicate (3 - length s) '0' <> s
+    elevOf d = stripPrefix "elev" d >>= readMaybe
+
+-- | Одна плоскость: измеренные азимуты плюс их зеркала.
+loadPlane :: Env -> (Double, FilePath) -> IO Plane
+loadPlane env (elev, dir) = do
+  files <- listDirectory dir
+  let measured = sortOn fst [(az, dir </> f) | f <- files, Just az <- [azimuthOf f]]
+  loaded <- forM measured $ \(az, path) -> do
+    bytes <- BS.readFile path
+    let (l, r) = splitStereo bytes
+    pure (az, Dir (snd (prep env l)) (snd (prep env r)) (fst (prep env l)) (fst (prep env r)))
+  -- Зеркало: источник слева это тот же отклик с переставленными ушами.
+  -- Азимуты 0 и 180 сами себе зеркало, их не дублируем.
+  let mirrored =
+        [ (360 - az, d {dirLeft = dirRight d, dirRight = dirLeft d, dirDelayL = dirDelayR d, dirDelayR = dirDelayL d})
+        | (az, d) <- loaded
+        , az > 0 && az < 180
+        ]
+      full = sortOn fst (loaded <> mirrored)
+  pure
+    Plane
+      { planeElev = elev
+      , planeAz = U.fromList (map fst full)
+      , planeDirs = V.fromList (map snd full)
+      }
+
+-- | Азимут из имени файла вида @H0e045a.dat@.
+azimuthOf :: FilePath -> Maybe Double
+azimuthOf name = do
+  rest <- stripPrefix "H" name
+  let (_, afterE) = break (== 'e') rest
+  digits <- stripPrefix "e" afterE
+  readMaybe (takeWhile isDigit digits)
 
 -- | То же по пути из переменной окружения @HSIG_HRTF@.
 loadHrtfEnv :: Env -> IO Hrtf
@@ -136,38 +178,103 @@ onsetOf xs
   where
     level = 0.2 * U.maximum (U.map abs xs)
 
--- | Направление по азимуту в радианах: интерполяция между двумя ближайшими
--- измерениями. Ноль это фронт, положительный угол вправо.
-dirAt :: Hrtf -> Double -> (U.Vector Double, U.Vector Double)
-dirAt h angle = (blend dirLeft, blend dirRight)
+-- | Отклики для направления: азимут и элевация в радианах. Ноль азимута это
+-- фронт, положительный вправо; ноль элевации это горизонт, положительная
+-- вверх.
+--
+-- Билинейная интерполяция: сперва по азимуту внутри двух ближайших
+-- плоскостей, потом между ними. Вне измеренного диапазона элевация
+-- зажимается: снизу набор кончается на -40 градусах, сверху зенитом.
+dirAt :: Hrtf -> Double -> Double -> (U.Vector Double, U.Vector Double)
+dirAt h az el = (blend fst, blend snd)
   where
-    (i, j, w) = neighbours h angle
-    dirs = hrtfDirs h
-    blend f = U.zipWith (\a b -> (1 - w) * a + w * b) (pad (f (dirs V.! i))) (pad (f (dirs V.! j)))
-    n = maximum [U.length (dirLeft d) `max` U.length (dirRight d) | d <- [dirs V.! i, dirs V.! j]]
-    pad v = v U.++ U.replicate (n - U.length v) 0
+    (pa, pb, w) = planesAt h el
+    lower = planeDir pa az
+    upper = planeDir pb az
+    blend side = mixIr w (side lower) (side upper)
 
--- | Задержки ушей для угла, в сэмплах. Интерполируются отдельно от откликов,
--- поэтому межушная разница меняется плавно.
-delayAt :: Hrtf -> Double -> (Double, Double)
-delayAt h angle = (tween dirDelayL, tween dirDelayR)
+-- | Задержки ушей для направления, в сэмплах. Интерполируются отдельно от
+-- откликов, поэтому межушная разница меняется плавно.
+delayAt :: Hrtf -> Double -> Double -> (Double, Double)
+delayAt h az el = (tween fst, tween snd)
   where
-    (i, j, w) = neighbours h angle
-    dirs = hrtfDirs h
-    tween f = (1 - w) * f (dirs V.! i) + w * f (dirs V.! j)
+    (pa, pb, w) = planesAt h el
+    lower = planeDelay pa az
+    upper = planeDelay pb az
+    tween side = (1 - w) * side lower + w * side upper
 
--- | Соседние направления сетки и вес второго.
-neighbours :: Hrtf -> Double -> (Int, Int, Double)
-neighbours h angle = (i `mod` n, (i + 1) `mod` n, w)
+-- | Отклики внутри одной плоскости.
+planeDir :: Plane -> Double -> (U.Vector Double, U.Vector Double)
+planeDir p az = (mixIr w (dirLeft a) (dirLeft b), mixIr w (dirRight a) (dirRight b))
   where
-    n = dirCount h
-    turns = angle / (2 * pi)
-    pos = (turns - fromIntegral (floor turns :: Int)) * fromIntegral n
-    i = floor pos
-    w = pos - fromIntegral i
+    (a, b, w) = aroundAz p az
 
--- | Панорама по измеренным откликам: угол в радианах, ноль это фронт,
--- положительный угол вправо.
+-- | Задержки внутри одной плоскости.
+planeDelay :: Plane -> Double -> (Double, Double)
+planeDelay p az = ((1 - w) * dirDelayL a + w * dirDelayL b, (1 - w) * dirDelayR a + w * dirDelayR b)
+  where
+    (a, b, w) = aroundAz p az
+
+-- | Линейная смесь двух откликов, короткий добивается нулями.
+mixIr :: Double -> U.Vector Double -> U.Vector Double -> U.Vector Double
+mixIr w a b = U.generate n (\i -> (1 - w) * at a i + w * at b i)
+  where
+    n = max (U.length a) (U.length b)
+    at v i = if i < U.length v then U.unsafeIndex v i else 0
+
+-- | Два соседних направления плоскости по азимуту и вес второго.
+aroundAz :: Plane -> Double -> (Dir, Dir, Double)
+aroundAz p az
+  | n == 0 = error "hsig: пустая плоскость HRTF"
+  | n == 1 = (dirs V.! 0, dirs V.! 0, 0)
+  | otherwise = (dirs V.! i, dirs V.! j, w)
+  where
+    dirs = planeDirs p
+    azs = planeAz p
+    n = V.length dirs
+    deg = wrapDeg (az * 180 / pi)
+    i = lastBelow 0 (n - 1)
+    j = (i + 1) `mod` n
+    -- Последний азимут не меньше искомого: двоичного поиска не надо, сетка
+    -- маленькая, зато код очевиден.
+    lastBelow acc k
+      | k < 0 = acc
+      | U.unsafeIndex azs k <= deg = k
+      | otherwise = lastBelow acc (k - 1)
+    a0 = U.unsafeIndex azs i
+    a1 = let v = U.unsafeIndex azs j in if v > a0 then v else v + 360
+    w = if a1 > a0 then (deg - a0) / (a1 - a0) else 0
+
+-- | Угол в градусах, приведённый к [0, 360).
+wrapDeg :: Double -> Double
+wrapDeg d = d - 360 * fromIntegral (floor (d / 360) :: Int)
+
+-- | Две соседние плоскости по элевации и вес верхней.
+planesAt :: Hrtf -> Double -> (Plane, Plane, Double)
+planesAt h el
+  | deg <= planeElev first = (first, first, 0)
+  | deg >= planeElev last' = (last', last', 0)
+  | otherwise = go 0
+  where
+    ps = hrtfPlanes h
+    n = V.length ps
+    first = ps V.! 0
+    last' = ps V.! (n - 1)
+    deg = el * 180 / pi
+    go k
+      | k >= n - 1 = (last', last', 0)
+      | planeElev (ps V.! (k + 1)) >= deg =
+          let a = ps V.! k
+              b = ps V.! (k + 1)
+              span' = planeElev b - planeElev a
+           in (a, b, if span' > 0 then (deg - planeElev a) / span' else 0)
+      | otherwise = go (k + 1)
+
+-- | Панорама по измеренным откликам: азимут и элевация в радианах.
+--
+-- Азимут: ноль это фронт, положительный вправо. Элевация: ноль это
+-- горизонт, положительная вверх; набор измерен от -40 до 90 градусов, за
+-- границами значение зажимается.
 --
 -- Цена: источник считается дважды, по разу на ухо, и на каждый выходной
 -- сэмпл идёт свёртка с откликом в полторы сотни отводов. Оберните источник в
@@ -175,13 +282,15 @@ neighbours h angle = (i `mod` n, (i + 1) `mod` n, w)
 --
 -- Отклик пересчитывается на каждом блоке и переходит к новому линейно внутри
 -- блока: скачок отклика на движущемся источнике слышен щелчком.
-binaural :: Hrtf -> Sig -> Sig -> Stereo
-binaural h angle src = Stereo (ear LeftEar) (ear RightEar)
+binaural :: Hrtf -> Sig -> Sig -> Sig -> Stereo
+binaural h az el src = Stereo (ear LeftEar) (ear RightEar)
   where
     ear side = delayed side (convolved side)
-    convolved side = Sig $ \env -> convolve h side (runSig angle env) (runSig src env)
+    convolved side = Sig $ \env -> convolve h side (runSig az env) (runSig el env) (runSig src env)
     delayed side =
-      vdelay maxDelaySec (mapSig (\a -> (base + ofSide side (delayAt h a)) / hrtfRate h) angle)
+      vdelay
+        maxDelaySec
+        (zipChunks Truncate (\a e -> (base + ofSide side (delayAt h a e)) / hrtfRate h) az el)
     -- Дробная задержка не умеет меньше половины ядра, поэтому обоим ушам
     -- добавляется общая полка: разница между ушами от неё не меняется.
     base = 8
@@ -197,17 +306,19 @@ ofSide LeftEar = fst
 ofSide RightEar = snd
 
 -- | Свёртка по блокам с линейным переходом между откликами соседних блоков.
-convolve :: Hrtf -> Side -> Chunks -> Chunks -> Chunks
-convolve h side = go (pick (dirAt h 0)) (U.replicate taps 0)
+convolve :: Hrtf -> Side -> Chunks -> Chunks -> Chunks -> Chunks
+convolve h side = go (pick (dirAt h 0 0)) (U.replicate taps 0)
   where
     pick = ofSide side
-    taps = U.length (dirLeft (V.head (hrtfDirs h)))
-    go _ _ [] _ = []
-    go _ _ _ [] = []
-    go prev history (a : as) (x : xs) = out : go now rest as xs
+    taps = U.length (dirLeft (V.head (planeDirs (V.head (hrtfPlanes h)))))
+    go _ _ [] _ _ = []
+    go _ _ _ [] _ = []
+    go _ _ _ _ [] = []
+    go prev history (a : as) (e : es) (x : xs) = out : go now rest as es xs
       where
-        now = pick (dirAt h (if U.null a then 0 else U.head a))
+        now = pick (dirAt h (headOr 0 a) (headOr 0 e))
         (out, rest) = convBlock prev now history x
+    headOr d v = if U.null v then d else U.head v
     convBlock prev now history x = runST $ do
       let n = U.length x
           m = U.length history

@@ -7,6 +7,7 @@ module Book.Ch19
   , source
   , spin
   , frontBack
+  , rise
   ) where
 
 import Book.Prelude
@@ -24,19 +25,26 @@ source secs = share (play voice (fast 2 "a3 c4 e4 g4") * gate 0.01 secs)
 
 -- | Оборот вокруг головы за восемь секунд.
 spin :: Hrtf -> Stereo
-spin h = binaural h angle (source 8)
+spin h = binaural h angle 0 (source 8)
   where
     angle = 2 * pi * line [(0, 0), (8, 1)]
 
 -- | Четыре секунды спереди, четыре сзади: сравнение без движения.
 frontBack :: Hrtf -> Stereo
-frontBack h = binaural h angle (source 8)
+frontBack h = binaural h angle 0 (source 8)
   where
     angle = constant pi * line [(0, 0), (3.9, 0), (4, 1), (8, 1)]
+
+-- | Подъём от горизонта к зениту и обратно, азимут держится сбоку.
+rise :: Hrtf -> Stereo
+rise h = binaural h (constant (pi / 4)) el (source 8)
+  where
+    el = constant (pi / 2) * line [(0, 0), (4, 1), (8, 0)]
 
 examples :: Hrtf -> [Example]
 examples h =
   [ exampleWide "19-hrtf-spin" (spin h)
   , exampleWide "19-hrtf-frontback" (frontBack h)
+  , exampleWide "19-hrtf-rise" (rise h)
   , exampleWide "19-orbit-spin" (orbit (2 * pi * line [(0, 0), (8, 1)]) (source 8))
   ]
