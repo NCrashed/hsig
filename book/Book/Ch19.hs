@@ -20,7 +20,7 @@ source :: Double -> Sig
 source secs = share (play voice (fast 2 "a3 c4 e4 g4") * gate 0.01 secs)
   where
     voice n =
-      (saw (constant (noteFreq n)) * 0.16 + highpass 3000 (noise 3) * 0.11)
+      (saw (constant (noteFreq n)) * 0.07 + highpass 3000 (noise 3) * 0.18)
         * adsr 0.002 0.15 0.3 0.15 (noteDur n * 0.9)
 
 -- | Оборот вокруг головы за восемь секунд.
