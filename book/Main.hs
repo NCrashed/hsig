@@ -21,10 +21,16 @@ import Book.Ch15 qualified as Ch15
 import Book.Ch16 qualified as Ch16
 import Book.Ch17 qualified as Ch17
 import Book.Ch18 qualified as Ch18
+import Book.Ch19 qualified as Ch19
 import Book.Prelude (renderExamples)
+import Sound.Sig (defaultEnv)
+import Sound.Sig.HRTF (loadHrtfEnv)
 
 main :: IO ()
-main =
+main = do
+  -- Глава 19 единственная зависит от данных снаружи: набор HRTF приезжает
+  -- через flake, путь берётся из HSIG_HRTF.
+  hrtf <- loadHrtfEnv defaultEnv
   renderExamples
     "out/book"
     ( concat
@@ -45,5 +51,6 @@ main =
         , Ch16.examples
         , Ch17.examples
         , Ch18.examples
+        , Ch19.examples hrtf
         ]
     )

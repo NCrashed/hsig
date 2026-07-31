@@ -7,6 +7,7 @@ import DelaySpec qualified
 import DynamicsSpec qualified
 import EnvelopeSpec qualified
 import FilterSpec qualified
+import HrtfSpec qualified
 import LeadSpec qualified
 import MiniSpec qualified
 import NonlinSpec qualified
@@ -41,5 +42,6 @@ main =
       , RenderSpec.tests
       , LeadSpec.tests
       , WavSpec.tests
+      , HrtfSpec.tests
       , BookSpec.tests
       ]

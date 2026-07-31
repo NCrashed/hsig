@@ -41,6 +41,26 @@
           ];
         };
 
+      # Измеренные характеристики головы (MIT KEMAR, компактный набор, 200 КБ).
+      # В репозиторий не кладём: фиксированный хэш даёт ту же
+      # воспроизводимость без бинарников в истории. Лицензия разрешает любое
+      # использование при ссылке на авторов: Bill Gardner и Keith Martin,
+      # MIT Media Lab, 1994.
+      kemar =
+        pkgs:
+        pkgs.runCommand "kemar-compact"
+          {
+            src = pkgs.fetchurl {
+              url = "https://sound.media.mit.edu/resources/KEMAR/compact.tar.Z";
+              hash = "sha256-JUjZ542150xKOaruIGHCR7r+0vnQ2gcNUfenSjX+R5c=";
+            };
+            nativeBuildInputs = [ pkgs.gzip ];
+          }
+          ''
+            mkdir -p $out
+            zcat $src | tar -xf - -C $out --strip-components=1
+          '';
+
       # Берём набор по умолчанию (сейчас GHC 9.10.3): у него полное покрытие
       # бинарным кэшем. Прибивать конкретный ghcXYZ имеет смысл только когда
       # появится причина отойти от дефолта.
@@ -48,7 +68,16 @@
         pkgs:
         pkgs.haskellPackages.extend (
           hfinal: _hprev: {
-            hsig = hfinal.callCabal2nix "hsig" (hsigSource pkgs) { };
+            # Тестам нужен набор HRTF, и путь к нему приходит переменной
+            # окружения, как и в дев-шелле: иначе проверки этапа M10 нечем
+            # прогнать в песочнице.
+            hsig = pkgs.haskell.lib.overrideCabal (hfinal.callCabal2nix "hsig" (hsigSource pkgs) { }) (
+              old: {
+                preCheck = (old.preCheck or "") + ''
+                  export HSIG_HRTF=${kemar pkgs}
+                '';
+              }
+            );
           }
         );
     in
@@ -89,6 +118,10 @@
           default = hp.shellFor {
             packages = ps: [ ps.hsig ];
             withHoogle = true;
+
+            # Путь к набору HRTF: библиотека и тесты читают его отсюда.
+            HSIG_HRTF = "${kemar pkgs}";
+
             nativeBuildInputs = [
               hp.cabal-install
               hp.haskell-language-server

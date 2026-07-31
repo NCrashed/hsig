@@ -49,6 +49,7 @@ library
     Sound.Sig.Envelope
     Sound.Sig.Filter
     Sound.Sig.Harmony
+    Sound.Sig.HRTF
     Sound.Sig.IO
     Sound.Sig.Nonlin
     Sound.Sig.Osc
@@ -121,6 +122,7 @@ executable book
     Book.Ch16
     Book.Ch17
     Book.Ch18
+    Book.Ch19
     Book.Prelude
     Lead
 
@@ -149,6 +151,7 @@ test-suite hsig-test
     DynamicsSpec
     EnvelopeSpec
     FilterSpec
+    HrtfSpec
     Lead
     LeadSpec
     MiniSpec
