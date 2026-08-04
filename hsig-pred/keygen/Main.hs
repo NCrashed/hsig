@@ -120,9 +120,9 @@ barOpts = defaultBarOpts {barLen = beats, barCands = 32, barVlMax = 6, barOrder 
 bars :: Int -> [Bar (Int, Int) Int]
 bars n = compose barOpts church chordOf tonality alphabet (max 1 n)
 
--- | Ноты: гармония по состояниям, мелодия по символам.
-linesOf :: [Bar (Int, Int) Int] -> ([[Double]], [Double], [Double])
-linesOf bs = (voices, lead, bassLine)
+-- | Ноты: гармония по состояниям, мелодия по символам, пилы второго плана.
+linesOf :: [Bar (Int, Int) Int] -> ([[Double]], [Double], [Double], [[Double]])
+linesOf bs = (voices, lead, bassLine, sawVoices)
   where
     states = concatMap barStates bs
     syms = concatMap barSyms bs
@@ -130,6 +130,10 @@ linesOf bs = (voices, lead, bassLine)
     -- Символ это ступень лада: мелодия читается напрямую, без переводов.
     lead = degreeLine tonality 64 [root st + s | (st, s) <- zip states syms]
     bassLine = degreeLine tonality 16 [root st | st <- states]
+    -- Основание и квинта, регистр между басом и органом. Полудиапазон
+    -- узкий: партия второго плана не должна разъезжаться по регистру,
+    -- иначе она перестаёт быть подложкой и начинает спорить с органом.
+    sawVoices = voiceLinesIn tonality 22 6 [mkChord [root st, root st + 4] | st <- states]
     root (_, d) = minimum (chordDegrees (degreeChords !! d))
 
 -- Голоса ----------------------------------------------------------------------
@@ -161,11 +165,43 @@ chip n =
     & decimate 6 3
     & (* adsr 0.002 0.05 0.35 0.05 (noteDur n))
 
+-- | Пила с ограниченным числом частичных.
+--
+-- Обрезание ряда это не аппроксимация в смысле DESIGN.md, разд. 2: там
+-- запрещены naive saw и PolyBLEP, потому что они дают алиасинг. Обрезанный
+-- ряд не даёт его вовсе - это ровно та же пила, только тёмная, и всё, что
+-- отброшено, ладдер срезал бы следом. Взамен партия второго плана стоит
+-- десятков осцилляторов на ноту вместо сотен.
+sawPipes :: Int -> Double -> Sig
+sawPipes parts f =
+  sum
+    [ constant (1 / fromIntegral k) * sine (constant (f * d * fromIntegral k))
+    | d <- [0.994, 1.006]
+    , k <- [1 .. parts]
+    ]
+
+-- | Пилы второго плана: расстроенная пара на основании и квинте.
+--
+-- Информации не несёт: доля такта, ступень и символ уже разобраны метром,
+-- органом и ведущим голосом. Это оркестровка, и выдавать её за носитель
+-- было бы враньём. Её работа - тяга и плотность в середине, там где орган
+-- держит, а бас только отмечает.
+saws :: Instrument
+saws n =
+  sawPipes 12 (noteFreq n)
+    * constant (0.28 * noteAmp n)
+    -- Срез выше прежнего не для яркости, а против маскировки. При потолке
+    -- в килогерц вся энергия пил лежала там же, где бас и основание
+    -- органа, и партия пропадала не от тихости, а оттого что её нечем
+    -- было услышать. Полоса до двух килогерц у неё своя.
+    & ladder (520 + 1500 * expdecay 0.3) 0.5
+    & (* adsr 0.006 0.09 0.55 0.07 (noteDur n))
+
 -- | Бас: четыре частичных и жёсткое ограничение сверху.
 bass :: Instrument
 bass n =
   sum [constant g * sine (constant (noteFreq n * r)) | (r, g) <- [(1, 1), (2, 0.5), (3, 0.22), (4, 0.1)]]
-    * constant (0.26 * noteAmp n)
+    * constant (0.22 * noteAmp n)
     & clip 0.5
     & (* adsr 0.004 0.06 0.6 0.05 (noteDur n))
 
@@ -190,17 +226,27 @@ track :: String -> [Bar (Int, Int) Int] -> [Stem]
 track name bs =
   [ stem (name <> "-organ") (takeSec total (play organ (slow barSec harm) & nave))
   , stem (name <> "-chip") (takeSec total (play chip (slow barSec lead') & sidechain kickSig 0.4))
+  , -- Пилы разведены по краям образа: в центре и без них тесно, там орган,
+    -- бас и бочка.
+    panned (-0.45) (stem (name <> "-sawL") (takeSec total (play saws (slow barSec sawPatL) & sidechain kickSig 0.55)))
+  , panned 0.45 (stem (name <> "-sawR") (takeSec total (play saws (slow barSec sawPatR) & sidechain kickSig 0.55)))
   , stem (name <> "-bass") (takeSec total (play bass (slow barSec bassPat) & sidechain kickSig 0.6))
   , stem (name <> "-drums") (takeSec total (play drums (slow barSec drumPat)))
   ]
   where
-    (voices, lead, bassLine) = linesOf bs
+    (voices, lead, bassLine, sawLines) = linesOf bs
     harm = harmonyPattern 27.5 beats voices
     lead' = accentPattern 27.5 0.45 beats lead
     bassPat = accentPattern 27.5 0.6 beats bassLine
+    -- Голоса пил разнесены по стемам, а не сложены в один: панорама у них
+    -- разная, а стем несёт одну панораму.
+    sawPatL = accentHarmony 27.5 0.5 beats (map (take 1) sawLines)
+    sawPatR = accentHarmony 27.5 0.5 beats (map (drop 1) sawLines)
     -- Бочка на первой и пятой доле, малый на пятой, хэт на каждой.
     drumPat = notes "[bd hh] hh [bd hh] hh [sd hh] hh hh [hh hh]"
-    kickSig = play drums (slow barSec (notes "bd ~ bd ~ ~ ~ ~ ~"))
+    -- share обязателен: сигнал используется четырьмя стемами, и без него
+    -- он считается заново на каждый (DESIGN.md, разд. 3).
+    kickSig = share (play drums (slow barSec (notes "bd ~ bd ~ ~ ~ ~ ~")))
     -- Такт это восемь восьмых при 150 ударах в минуту.
     -- Time рациональное, а takeSec берёт Double: одно и то же число нужно
     -- в двух типах, и молча его не привести.
@@ -238,6 +284,7 @@ main = do
       states = concatMap barStates bs
 
       name = "keygen-" <> show n
+      (hv, hl, hb, hs) = linesOf bs
       path suffix = "out" </> name <> suffix
   createDirectoryIfMissing True "out"
   printf "тактов %d, длительность %.1f с\n" (length bs) (1.6 * fromIntegral (length bs) :: Double)
@@ -250,7 +297,7 @@ main = do
   printf "ошибка модели, каждый четвёртый такт: %s\n" (unwords [printf "%5.2f" (barError b) :: String | b <- everyNth 4 bs])
   printf "ступени по тактам: %s\n" (concatMap (show . snd . head' . barStates) bs)
   printf "сюрприз по доле: %s   граница/остальные %.2f\n" (unwords [printf "%5.2f" v :: String | v <- profileOf bs]) (frontRatio (profileOf bs))
-  printf "нот: гармония %d, ведущий %d, бас %d\n" (3 * runs voices) (runs lead) (runs bassLine)
+  printf "нот: гармония %d, ведущий %d, бас %d, пилы %d\n" (3 * runs hv) (runs hl) (runs hb) (2 * runs hs)
   if quiet
     then putStrLn "рендер пропущен"
     else renderTrack defaultEnv (path ".wav") (track name bs) >>= putStrLn
@@ -261,4 +308,4 @@ main = do
       [] -> error "keygen: такт без состояний"
     runs :: (Eq a) => [a] -> Int
     runs evs = sum [length (runsOf bar) | bar <- chunksOf beats evs]
-    (voices, lead, bassLine) = linesOf (bars 24)
+

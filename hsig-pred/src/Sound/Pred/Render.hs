@@ -21,6 +21,7 @@ module Sound.Pred.Render
   , harmonyPattern
   , melodyPattern
   , accentPattern
+  , accentHarmony
   ) where
 
 import Data.List (sort)
@@ -169,9 +170,25 @@ firstOfRun (x : xs) = True : zipWith (/=) xs (x : xs)
 accentPattern :: Double -> Double -> Int -> [Double] -> Pattern Note
 accentPattern base quiet n ss =
   cat
-    [ fastcat [pure (hit a s) | (a, s) <- bar]
+    [ fastcat [pure (hit base a s) | (a, s) <- bar]
     | bar <- chunksOf n (zip amps ss)
     ]
   where
     amps = [if new then 1 else quiet | new <- firstOfRun ss]
-    hit a s = (noteOf (hzOf base s)) {noteAmp = a}
+
+-- | То же для многоголосия: аккорд на каждом событии, повтор тише.
+--
+-- Отличается от 'harmonyPattern' тем же, чем 'accentPattern' от
+-- 'melodyPattern': там держащий голос и слияние, тут ритмическая партия и
+-- атака на каждой доле.
+accentHarmony :: Double -> Double -> Int -> [[Double]] -> Pattern Note
+accentHarmony base quiet n evs =
+  cat
+    [ fastcat [stack [pure (hit base a s) | s <- voices] | (a, voices) <- bar]
+    | bar <- chunksOf n (zip amps evs)
+    ]
+  where
+    amps = [if new then 1 else quiet | new <- firstOfRun evs]
+
+hit :: Double -> Double -> Double -> Note
+hit base a s = (noteOf (hzOf base s)) {noteAmp = a}
