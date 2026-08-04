@@ -2,6 +2,7 @@
 module Main (main) where
 
 import ComposeSpec qualified
+import DiagramSpec qualified
 import DistSpec qualified
 import KernelSpec qualified
 import ListenerSpec qualified
@@ -26,4 +27,5 @@ main =
       , OrbifoldSpec.tests
       , RenderSpec.tests
       , ComposeSpec.tests
+      , DiagramSpec.tests
       ]

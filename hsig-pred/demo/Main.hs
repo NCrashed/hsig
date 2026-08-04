@@ -9,6 +9,7 @@ module Main (main) where
 
 import Data.Function ((&))
 import Sound.Pred.Compose
+import Sound.Pred.Diagram
 import Sound.Pred.Dist qualified as D
 import Sound.Pred.Machine
 import Sound.Pred.Metric (distMatrix)
@@ -16,6 +17,7 @@ import Sound.Pred.Model (unfoldPred)
 import Sound.Pred.Orbifold
 import Sound.Pred.Render
 import Sound.Sig
+import System.Environment (getArgs)
 import System.IO (BufferMode (..), hSetBuffering, stdout)
 import Text.Printf (printf)
 
@@ -75,8 +77,13 @@ chordOf s = stateChords !! s
 barOpts :: BarOpts
 barOpts = defaultBarOpts {barLen = 8, barCands = 32, barVlMax = 5, barOrder = 3}
 
-bars :: [Bar Int Int]
-bars = compose barOpts ring chordOf tonality alphabet 12
+-- | Сколько тактов сочинять. Двенадцать это калибровочный прогон, на нём
+-- считаются сравнения режимов отбора; длиннее задаётся аргументом.
+barCount :: Int -> Int
+barCount n = max 1 n
+
+bars :: Int -> [Bar Int Int]
+bars n = compose barOpts ring chordOf tonality alphabet (barCount n)
 
 -- | Четыре режима отбора для сравнения кривых ошибки модели.
 --
@@ -96,20 +103,20 @@ noTypical = compose barOpts {barTypical = Nothing} ring chordOf tonality alphabe
 baseline :: [Bar Int Int]
 baseline = compose barOpts {barCands = 1} ring chordOf tonality alphabet 12
 
+-- | След пьесы: причинное состояние перед каждым событием и сам символ.
+-- Это всё содержание трека; ниже из него выводится любая слышимая деталь.
+traceOf :: [Bar Int Int] -> ([Int], [Int])
+traceOf bs = (concatMap barStates bs, concatMap barSyms bs)
+
 -- | Гармония по состояниям и мелодия по символам.
 --
 -- Два независимых канала: гармония несёт причинное состояние, мелодия
 -- несёт излучённый символ. Смешивать их нельзя, иначе слушателю не из чего
 -- разделить «где мы» и «что произошло».
--- | След пьесы: причинное состояние перед каждым событием и сам символ.
--- Это всё содержание трека; ниже из него выводится любая слышимая деталь.
-trace' :: ([Int], [Int])
-trace' = (concatMap barStates bars, concatMap barSyms bars)
-
-lines' :: ([[Double]], [Double])
-lines' = (voices, melody)
+linesOf :: [Bar Int Int] -> ([[Double]], [Double])
+linesOf bs = (voices, melody)
   where
-    (states, syms) = trace'
+    (states, syms) = traceOf bs
     voices = voiceLines tonality 36 (map chordOf states)
     -- Символ выбирает ступень над основанием аккорда, а не номер голоса.
     -- При трёх голосах и четырёх символах отображение в номер склеивало бы
@@ -143,39 +150,58 @@ pluck n =
     & (* adsr 0.004 0.11 0.15 0.09 (noteDur n))
     & (* 0.34)
 
-track :: [Stem]
-track =
+track :: [Bar Int Int] -> [Stem]
+track bs =
   [ stem "pred-harm" (takeSec total (play pad (slow barSec harm)))
   , stem "pred-mel" (takeSec total (play pluck (slow barSec mel)))
   ]
   where
-    (voices, melody) = lines'
+    (voices, melody) = linesOf bs
     harm = harmonyPattern 27.5 (barLen barOpts) voices
     mel = melodyPattern 27.5 (barLen barOpts) melody
     -- Цикл в hsig это секунда, такт растягиваем до двух: восемь событий в
     -- секунду ухо в структуру не складывает.
     barSec = 2
-    total = 2 * fromIntegral (length bars)
+    total = 2 * fromIntegral (length bs)
 
 main :: IO ()
 main = do
   hSetBuffering stdout LineBuffering
+  args <- getArgs
+  let n = case args of
+        (a : _) | [(k, "")] <- reads a -> k
+        _ -> 12
+      bs = bars n
+      (states, syms) = traceOf bs
+      -- Один корень имени на прогон: звук и картинки к нему складываются
+      -- вместе и длинный прогон не затирает картинки калибровочного.
+      stem' = "out/" <> (if n == 12 then "pred" else "pred-" <> show n)
+  printf "тактов %d, длительность %d с\n" (length bs) (2 * length bs)
   printf "h_mu   = %.4f бит на символ\n" (entropyRate ring)
   printf "C_mu   = %.4f бит\n" (statComplexity ring)
-  printf "аккорды: %s\n" (show (map chordDegrees stateChords))
   printf "липшиц = %.3f, искажение = %.3f\n" lip dist'
-  putStrLn "такт  ошибка  выигрыш  сюрприз  ожидал  истина  скачок"
-  mapM_ report (zip [1 :: Int ..] bars)
-  putStrLn "ошибка модели по тактам, четыре режима отбора:"
-  printf "  умолчание   %s\n" (curve bars)
-  printf "  без порога  %s\n" (curve noTypical)
-  printf "  с окном     %s\n" (curve withWindow)
-  printf "  без выбора  %s\n" (curve baseline)
+  -- Картинки кладутся рядом со звуком и тем же прогоном: схема, разошедшаяся
+  -- с машиной, врёт про то, что звучит, а сверять их руками никто не станет.
+  writeFile (stem' <> "-kernel.mmd") (mermaidOf ring stateLabel symLabel 0.02)
+  writeFile (stem' <> "-kernel.svg") (ringSvg defaultTheme ring semisLabel 0.05)
+  writeFile (stem' <> "-trace.svg") (traceSvg defaultTheme ring (barLen barOpts) 20 states)
+  printf "картинки: %s-kernel.svg, %s-trace.svg, %s-kernel.mmd\n" stem' stem' stem'
+  -- Сравнение режимов отбора считает четыре пьесы, поэтому только на
+  -- калибровочной длине. На длинном прогоне интересна одна кривая.
+  if n <= 16
+    then do
+      putStrLn "ошибка модели по тактам, четыре режима отбора:"
+      printf "  умолчание   %s\n" (curve bs)
+      printf "  без порога  %s\n" (curve noTypical)
+      printf "  с окном     %s\n" (curve withWindow)
+      printf "  без выбора  %s\n" (curve baseline)
+    else do
+      putStrLn "ошибка модели, каждый восьмой такт:"
+      printf "  %s\n" (curve (everyNth 8 bs))
   putStrLn "--- ядро ---"
-  printf "состояния: %s\n" (concatMap show states)
-  printf "символы:   %s\n" (concatMap show syms)
   printf "палитра в полутонах: %s\n" (show [map (`mod` 12) (chordSemis tonality c) | c <- stateChords])
-  printf "гармония по тактам: %s\n" (show (map (take 1 . barStates) bars))
+  printf "состояния: %s\n" (concatMap show (take 200 states))
+  printf "символы:   %s\n" (concatMap show (take 200 syms))
   printf
     "ядро %.0f бит; поток %d событий, из них неустранимых %.0f бит\n"
     kernelBits
@@ -183,13 +209,17 @@ main = do
     (fromIntegral (length syms) * entropyRate ring)
   printf
     "нот в партитуре: гармония %d из %d слотов, мелодия %d из %d\n"
-    (3 * countRuns (fst lines'))
+    (3 * countRuns (fst (linesOf bs)))
     (3 * length syms)
-    (countRuns (snd lines'))
+    (countRuns (snd (linesOf bs)))
     (length syms)
-  renderTrack defaultEnv "out/pred.wav" track >>= putStrLn
+  renderTrack defaultEnv (stem' <> ".wav") (track bs) >>= putStrLn
   where
-    (states, syms) = trace'
+    stateLabel s = show s <> ": " <> show (semis s)
+    semisLabel = unwords . map show . semis
+    semis s = map (`mod` 12) (chordSemis tonality (chordOf s))
+    symLabel x = ["стоять", "вперёд", "назад", "через одну"] !! x
+    everyNth k xs = [x | (i, x) <- zip [0 :: Int ..] xs, i `mod` k == 0]
     -- Размер описания ядра: таблица сдвигов, разбиение состояний на три
     -- класса поведения и сами распределения с точностью до сотой.
     kernelBits :: Double
@@ -202,13 +232,3 @@ main = do
     d = distMatrix (map (\s -> unfoldPred (machineOut ring) (machineStep ring) s) (machineStates ring))
     lip = lipschitz tonality stateChords d
     dist' = distortion tonality stateChords d
-    report (i, b) =
-      printf
-        "%4d  %6.3f  %7.4f  %7.3f  %6.3f  %6.3f  %6.1f\n"
-        i
-        (barError b)
-        (barGain b)
-        (barSurprisal b)
-        (barExpected b)
-        (barTrueSurp b)
-        (barLeap b)
