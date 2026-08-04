@@ -41,6 +41,7 @@ module Sound.Pred.Orbifold
 
 import Data.List (nub, permutations, sort)
 import Data.Maybe (fromMaybe)
+import Sound.Pred.Embed
 import Sound.Sig.Harmony (degreeSemitones, scaleSemitones)
 
 -- Лад ------------------------------------------------------------------------
@@ -155,24 +156,20 @@ defaultEmbed =
     , embedRounds = 60
     }
 
--- | Целевые расстояния: матрица модели, растянутая до 'embedSpan'.
-targets :: EmbedOpts -> [[Double]] -> [[Double]]
-targets opts d = [[k * x | x <- row] | row <- d]
-  where
-    top = maximum (0 : concat d)
-    k = if top > 0 then embedSpan opts / top else 0
-
 -- | Невязка укладки: сумма квадратов отклонений голосоведения от цели.
 stress :: EmbedOpts -> [[Double]] -> [Chord] -> Double
-stress opts d cs =
-  sum
-    [ (vlDist (embedScale opts) (cs !! i) (cs !! j) - tg !! i !! j) ** 2
-    | i <- [0 .. n - 1]
-    , j <- [i + 1 .. n - 1]
-    ]
-  where
-    n = length cs
-    tg = targets opts d
+stress opts d cs = stressIn (flatSpace opts) (embedSpan opts) d cs
+
+-- | Пространство, где позиция это сам аккорд: нужно только чтобы померить
+-- стресс готовой раскладки, поиск по нему не ходит.
+flatSpace :: EmbedOpts -> Space Chord
+flatSpace opts =
+  Space
+    { spaceNeighbours = const []
+    , spaceDist = vlDist (embedScale opts)
+    , spaceStarts = const []
+    , spaceSame = \a b -> pcsOf opts a == pcsOf opts b
+    }
 
 -- | Уложить состояния в аккорды так, чтобы близкие предсказания стали
 -- близким голосоведением.
@@ -182,65 +179,36 @@ stress opts d cs =
 -- всё равно меряется отдельно ('lipschitz', 'distortion'), а не
 -- предполагается.
 embed :: EmbedOpts -> [[Double]] -> [Chord]
-embed opts d = map chordAt (lowest [go (embedRounds opts) s | s <- starts])
+embed opts d = map chordAt (embedIn (chordSpace opts) (embedSpan opts) (embedRounds opts) d)
   where
-    n = length d
-    shapes = embedShapes opts
+    chordAt = chordOfPos opts
 
-    -- Позиция состояния это основание и номер фигуры. Аккорд собирается из
-    -- них, поэтому нот вне фигуры не бывает вовсе: искать негде.
-    chordAt (r, si) = mkChord [r + o | o <- shapes !! si]
+-- | Пространство аккордов как частный случай общей укладки.
+--
+-- Позиция это основание и номер фигуры. Аккорд собирается из них, поэтому
+-- нот вне фигуры не бывает вовсе - искать негде, и запрет на секунды не
+-- нужен отдельным правилом.
+chordSpace :: EmbedOpts -> Space (Int, Int)
+chordSpace opts =
+  Space
+    { spaceNeighbours = \(r, si) ->
+        [(r + delta, si) | delta <- [-2, -1, 1, 2]]
+          <> [(r, sj) | sj <- [0 .. length (embedShapes opts) - 1], sj /= si]
+    , spaceDist = \a b -> vlDist (embedScale opts) (chordOfPos opts a) (chordOfPos opts b)
+    , spaceStarts = \n ->
+        [ [(off + i * step, 0) | i <- [0 .. n - 1]]
+        | step <- [1, 2, 3]
+        , off <- [0, 1]
+        ]
+    , spaceSame = \a b -> pcsOf opts (chordOfPos opts a) == pcsOf opts (chordOfPos opts b)
+    }
 
-    -- Несколько стартов, а не один. Координатный спуск застревает: два
-    -- состояния с небольшим, но ненулевым расстоянием садятся на один
-    -- аккорд, и сдвинуть любое из них поодиночке дороже, чем оставить.
-    -- Признак в измерении однозначный - искажение уходит в бесконечность.
-    -- Случайности не добавлено, воспроизводимость дороже.
-    starts =
-      [ [(off + i * step, 0) | i <- [0 .. n - 1]]
-      | step <- [1, 2, 3]
-      , off <- [0, 1]
-      ]
+chordOfPos :: EmbedOpts -> (Int, Int) -> Chord
+chordOfPos opts (r, si) = mkChord [r + o | o <- embedShapes opts !! si]
 
-    stressAt cs = stress opts d (map chordAt cs)
-    lowest = foldr1 (\a b -> if stressAt a <= stressAt b then a else b)
-
-    go 0 cs = cs
-    go r cs
-      | stressAt cs' < stressAt cs - 1e-12 = go (r - 1) cs'
-      | otherwise = cs
-      where
-        cs' = sweep cs
-
-    -- Один проход: каждое состояние по очереди уезжает в лучшую соседнюю
-    -- позицию при замороженных остальных.
-    sweep cs = foldl improve cs [0 .. n - 1]
-
-    improve cs i = pick cs [replaceAt i p cs | p <- neighbours (cs !! i), free cs i p]
-      where
-        pick acc [] = acc
-        pick acc (x : xs)
-          | stressAt x < stressAt acc = pick x xs
-          | otherwise = pick acc xs
-
-    -- Два состояния не могут получить один аккорд. Это не вкус, а условие
-    -- осмысленности: гармония объявлена носителем причинного состояния, и
-    -- совпадение означает, что состояние ею не кодируется. Стресс такое
-    -- допускает охотно, поэтому запрет стоит в поиске, а не в оценке.
-    --
-    -- Аккорды сравниваются по звучанию, то есть по классам высот: основания,
-    -- отличающиеся на размер лада, дают один и тот же аккорд.
-    free cs i p = all (\j -> pcs (chordAt (cs !! j)) /= pcs (chordAt p)) others
-      where
-        others = [j | j <- [0 .. n - 1], j /= i]
-    pcs c = sort (map (`mod` 12) (chordSemis (embedScale opts) c))
-
-    -- Соседи по сдвигу основания и по смене фигуры.
-    neighbours (r, si) =
-      [(r + delta, si) | delta <- [-2, -1, 1, 2]]
-        <> [(r, sj) | sj <- [0 .. length shapes - 1], sj /= si]
-
-    replaceAt i x xs = take i xs <> [x] <> drop (i + 1) xs
+-- | Классы высот аккорда: сравнение по звучанию, а не по записи.
+pcsOf :: EmbedOpts -> Chord -> [Int]
+pcsOf opts c = sort (map (`mod` 12) (chordSemis (embedScale opts) c))
 
 -- | Все голоса аккорда на разных высотах по модулю октавы.
 distinctVoices :: Scale -> Chord -> Bool
@@ -254,25 +222,19 @@ distinctVoices sc c = length (nub pcs) == length pcs
 -- Меряется, а не декларируется. Пары с нулевым расстоянием модели
 -- пропускаются: они ничего не ограничивают.
 lipschitz :: Scale -> [Chord] -> [[Double]] -> Double
-lipschitz sc cs d = maximum (0 : ratios sc cs d)
+lipschitz sc cs d = lipschitzIn (metricSpace sc) cs d
 
 -- | Билипшицево искажение: отношение наибольшего растяжения к наименьшему.
 -- Единица означает подобие, чем больше, тем хуже слышна структура модели.
 distortion :: Scale -> [Chord] -> [[Double]] -> Double
-distortion sc cs d
-  | null rs = 1
-  | lo <= 0 = 1 / 0
-  | otherwise = maximum rs / lo
-  where
-    rs = ratios sc cs d
-    lo = minimum rs
+distortion sc cs d = distortionIn (metricSpace sc) cs d
 
-ratios :: Scale -> [Chord] -> [[Double]] -> [Double]
-ratios sc cs d =
-  [ vlDist sc (cs !! i) (cs !! j) / (d !! i !! j)
-  | i <- [0 .. n - 1]
-  , j <- [i + 1 .. n - 1]
-  , d !! i !! j > 0
-  ]
-  where
-    n = length cs
+-- | Пространство только с метрикой: для замеров качества готовой укладки.
+metricSpace :: Scale -> Space Chord
+metricSpace sc =
+  Space
+    { spaceNeighbours = const []
+    , spaceDist = vlDist sc
+    , spaceStarts = const []
+    , spaceSame = \a b -> vlDist sc a b == 0
+    }

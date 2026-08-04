@@ -32,6 +32,7 @@ library
     Sound.Pred.Compose
     Sound.Pred.Diagram
     Sound.Pred.Dist
+    Sound.Pred.Embed
     Sound.Pred.Kernel
     Sound.Pred.Listener
     Sound.Pred.Machine
@@ -39,6 +40,7 @@ library
     Sound.Pred.Model
     Sound.Pred.Orbifold
     Sound.Pred.Render
+    Sound.Pred.Timbre
 
   build-depends:
     , base        >=4.19 && <5
@@ -76,6 +78,7 @@ test-suite hsig-pred-test
     ModelSpec
     OrbifoldSpec
     RenderSpec
+    TimbreSpec
 
   build-depends:
     , base

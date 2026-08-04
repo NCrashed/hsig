@@ -11,6 +11,7 @@ import MetricSpec qualified
 import ModelSpec qualified
 import OrbifoldSpec qualified
 import RenderSpec qualified
+import TimbreSpec qualified
 import Test.Tasty
 
 main :: IO ()
@@ -26,6 +27,7 @@ main =
       , MetricSpec.tests
       , OrbifoldSpec.tests
       , RenderSpec.tests
+      , TimbreSpec.tests
       , ComposeSpec.tests
       , DiagramSpec.tests
       ]
