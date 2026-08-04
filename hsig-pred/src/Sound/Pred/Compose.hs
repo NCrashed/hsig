@@ -15,6 +15,7 @@ module Sound.Pred.Compose
   , defaultBarOpts
   , Bar (..)
   , compose
+  , composeWith
   , modelError
   , probesOf
   , runMachine
@@ -164,14 +165,26 @@ modelError m lis ps
   | null ps = 0
   | otherwise = sum [kl (machineOut m s) (predictLongAfter lis (reverse h)) | (h, s) <- ps] / fromIntegral (length ps)
 
--- | Сочинить заданное число тактов.
+-- | Сочинить заданное число тактов по неизменной машине.
 compose :: (Ord a) => BarOpts -> Machine s a -> (s -> Chord) -> Scale -> [a] -> Int -> [Bar s a]
-compose opts m chordOf sc alphabet total
+compose opts m = composeWith opts (const m)
+
+-- | То же по семейству машин, индексированному номером такта.
+--
+-- Дрейфующий процесс это не большая неподвижная машина с меткой режима:
+-- такую слушатель выучивает целиком, включая метку, и переключение между
+-- режимами перестаёт что-либо ему стоить. Здесь меняются сами вероятности,
+-- траектория не повторяется, и выученное устаревает по мере движения.
+--
+-- Пробные точки пересчитываются на каждый такт: истина, с которой
+-- сверяется слушатель, теперь тоже движется, и мерять его по вчерашней
+-- машине было бы бессмысленно.
+composeWith :: (Ord a) => BarOpts -> (Int -> Machine s a) -> (s -> Chord) -> Scale -> [a] -> Int -> [Bar s a]
+composeWith opts machineAt chordOf sc alphabet total
   | barLen opts < 1 = error "hsig-pred: такт короче одного события"
-  | otherwise = go total 0 (machineStart m) start Nothing
+  | otherwise = go total 0 (machineStart (machineAt 0)) start Nothing
   where
     start = newListenerWith (barOrder opts) (barShortOrder opts) alphabet
-    ps = probesOf m (barOrder opts) (barProbes opts) (barSeed opts + 9973)
 
     -- Граница фразы ставится перед тактом, а не после: краткосрочная память
     -- обязана быть пуста ровно тогда, когда фраза начинается. Отсюда же и
@@ -188,10 +201,12 @@ compose opts m chordOf sc alphabet total
     -- следующем такте, и стык обязан считаться по слышимому.
     go n i st lis0 prev = bar : go (n - 1) (i + 1) end lis' (Just (chordOf (lastState sts)))
       where
+        mi = machineAt i
+        ps = probesOf mi (barOrder opts) (barProbes opts) (barSeed opts + 9973 + i)
         lis = atBoundary i lis0
-        errBefore = modelError m lis ps
-        cands = [sampleBar st (barSeed opts + i * 7919 + j) | j <- [0 .. barCands opts - 1]]
-        scored = map (score lis errBefore prev) cands
+        errBefore = modelError mi lis ps
+        cands = [sampleBar mi st (barSeed opts + i * 7919 + j) | j <- [0 .. barCands opts - 1]]
+        scored = map (score mi ps lis errBefore prev) cands
         feasible = filter scoreOk scored
         picked
           | not (null feasible) = maximumBy (comparing scoreGain) feasible
@@ -206,21 +221,21 @@ compose opts m chordOf sc alphabet total
     lastState [] = error "hsig-pred: такт без состояний"
     lastState xs = last xs
 
-    sampleBar st seed = walkBar (barLen opts) st (uniformsFrom seed) [] []
-    walkBar 0 s _ syms sts = (reverse syms, reverse sts, s)
-    walkBar k s (u : us) syms sts = walkBar (k - 1) (machineStep m s x) us (x : syms) (s : sts)
+    sampleBar mi st seed = walkBar mi (barLen opts) st (uniformsFrom seed) [] []
+    walkBar _ 0 s _ syms sts = (reverse syms, reverse sts, s)
+    walkBar mi k s (u : us) syms sts = walkBar mi (k - 1) (machineStep mi s x) us (x : syms) (s : sts)
       where
-        x = sampleWith u (machineOut m s)
-    walkBar _ s [] syms sts = (reverse syms, reverse sts, s)
+        x = sampleWith u (machineOut mi s)
+    walkBar _ _ s [] syms sts = (reverse syms, reverse sts, s)
 
-    score lis errBefore prev cand@(syms, sts, _) = Scored g surp expd tsurp leap cand ok
+    score mi ps lis errBefore prev cand@(syms, sts, _) = Scored g surp expd tsurp leap cand ok
       where
-        g = errBefore - modelError m (trainOn lis syms) ps
+        g = errBefore - modelError mi (trainOn lis syms) ps
         surp = mean (onlineSurprisals lis syms)
         expd = mean (onlineEntropies lis syms)
         -- Сюрприз под истинной машиной: считается по её же состояниям,
         -- поэтому от слушателя не зависит вообще.
-        tsurp = mean [surprisalOf (machineOut m s) x | (s, x) <- zip sts syms]
+        tsurp = mean [surprisalOf (machineOut mi s) x | (s, x) <- zip sts syms]
         cs = map chordOf sts
         line = maybe cs (: cs) prev
         leap = maximum (0 : zipWith (vlDist sc) line (drop 1 line))
