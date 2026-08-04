@@ -94,7 +94,7 @@ stateChords = embed opts (distMatrix (map asPred (machineStates ring)))
     asPred s = unfoldPred (machineOut ring) (machineStep ring) s
     -- Разброс укладки не больше потолка скачка в barOpts: иначе
     -- ограничение на голосоведение нарушалось бы самой таблицей аккордов.
-    opts = defaultEmbed {embedScale = tonality, embedVoices = 3, embedSpan = 4}
+    opts = defaultEmbed {embedScale = tonality, embedSpan = 4}
 
 tonality :: Scale
 tonality = mkScale "dorian"
@@ -121,7 +121,7 @@ phrasedDist = distMatrixWith 9 defaultGamma (map asPred [(0, 0), (4, 0), (4, 1)]
 phrasedChords :: [Chord]
 phrasedChords = embed opts phrasedDist
   where
-    opts = defaultEmbed {embedScale = tonality, embedVoices = 3, embedSpan = 5}
+    opts = defaultEmbed {embedScale = tonality, embedSpan = 5}
 
 phrasedChord :: (Int, Int) -> Chord
 phrasedChord (p, m) = phrasedChords !! (if p == 0 then 0 else 1 + m)

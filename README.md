@@ -143,6 +143,14 @@ nix flake check                  # то же, что гоняет CI: сборк
 cabal run book && tools/book-audio.sh
 ```
 
+Отрендеренный трек можно сжать тем же кодировщиком - wav с трёх минут весит
+35 МБ, mp3 около трёх:
+
+```
+tools/mp3.sh keygen-48           # out/keygen-48.wav -> out/keygen-48.mp3
+tools/mp3.sh                     # все wav в out
+```
+
 CI (`.github/workflows/ci.yml`) делает то же самое, что можно сделать руками:
 `nix flake check` (сборка и 589 тестов в песочнице), `hlint`, проверка
 форматирования Haskell и Nix, рендер демо-трека с проверкой размера файла.

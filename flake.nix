@@ -51,6 +51,7 @@
           fileset = pkgs.lib.fileset.unions [
             ./hsig-pred/hsig-pred.cabal
             ./hsig-pred/demo
+            ./hsig-pred/keygen
             ./hsig-pred/src
             ./hsig-pred/test
           ];
