@@ -13,7 +13,7 @@ import Sound.Pred.Diagram
 import Sound.Pred.Dist qualified as D
 import Sound.Pred.Listener
 import Sound.Pred.Machine
-import Sound.Pred.Metric (distMatrix)
+import Sound.Pred.Metric (defaultGamma, distMatrix, distMatrixWith)
 import Sound.Pred.Model (unfoldPred)
 import Sound.Pred.Orbifold
 import Sound.Pred.Render
@@ -55,6 +55,33 @@ ring =
       | even s = [(0, 0.06), (1, 0.85), (2, 0.06), (3, 0.03)]
       | otherwise = [(0, 0.06), (1, 0.06), (2, 0.85), (3, 0.03)]
 
+-- | Машина с периодом в такт: фраза объявляет себя и потом себя развивает.
+--
+-- Состояние это доля такта и наклонение блока. На нулевой доле выход
+-- равномерен, и излучённый символ задаёт наклонение на всю фразу: это
+-- объявление стоит ровно два бита. Дальше семь долей идут из острого
+-- распределения выбранного наклонения и стоят около восьми десятых бита.
+--
+-- Зачем так. У стационарного процесса все доли такта статистически
+-- одинаковы, и никакой профиль сюрприза из него не выжать: пик на границе
+-- пришлось бы навязывать отбором, то есть врать про процесс. Пик обязан
+-- быть свойством материала, и тогда он честен. Машина остаётся унифилярной:
+-- наклонение читается из объявляющего символа.
+phrased :: Machine (Int, Int) Int
+phrased =
+  Machine
+    { machineStart = (0, 0)
+    , machineStates = (0, 0) : [(p, m) | p <- [1 .. 7], m <- [0, 1]]
+    , machineOut = \(p, m) ->
+        if p == 0
+          then D.uniform alphabet
+          else D.dist (if m == 0 then [(0, 0.85), (1, 0.1), (2, 0.03), (3, 0.02)] else [(2, 0.85), (3, 0.1), (0, 0.03), (1, 0.02)])
+    , machineStep = \(p, m) x ->
+        if p == 0
+          then (1, x `mod` 2)
+          else if p == 7 then (0, 0) else (p + 1, m)
+    }
+
 alphabet :: [Int]
 alphabet = [0 .. 3]
 
@@ -74,6 +101,30 @@ tonality = mkScale "dorian"
 
 chordOf :: Int -> Chord
 chordOf s = stateChords !! s
+-- | Гармония несёт только то, чего нет в метре.
+--
+-- Состояние фразовой машины склеено из двух независимых вещей: доли такта
+-- и наклонения фразы. Долю уже несёт сам метр, и дублировать её гармонией
+-- незачем - а попытка это сделать проваливается измеримо: пятнадцать
+-- состояний не укладываются в трёхголосие без совпадений, и искажение
+-- уходит в бесконечность.
+--
+-- Поэтому укладывается фактор: объявление фразы и два наклонения. Три
+-- точки, три аккорда, конечное искажение. Граница такта получает
+-- собственную гармонию, и это ровно та гармоническая ритмика, что принята
+-- в музыке: аккорд на такт, смена на сильной доле.
+phrasedDist :: [[Double]]
+phrasedDist = distMatrixWith 9 defaultGamma (map asPred [(0, 0), (4, 0), (4, 1)])
+  where
+    asPred s = unfoldPred (machineOut phrased) (machineStep phrased) s
+
+phrasedChords :: [Chord]
+phrasedChords = embed opts phrasedDist
+  where
+    opts = defaultEmbed {embedScale = tonality, embedVoices = 3, embedSpan = 5}
+
+phrasedChord :: (Int, Int) -> Chord
+phrasedChord (p, m) = phrasedChords !! (if p == 0 then 0 else 1 + m)
 
 -- Пьеса ------------------------------------------------------------------------
 
@@ -85,8 +136,8 @@ barOpts = defaultBarOpts {barLen = 8, barCands = 32, barVlMax = 5, barOrder = 3}
 barCount :: Int -> Int
 barCount n = max 1 n
 
-bars :: Int -> [Bar Int Int]
-bars n = compose barOpts ring chordOf tonality alphabet (barCount n)
+bars :: Int -> [Bar (Int, Int) Int]
+bars n = compose barOpts phrased phrasedChord tonality alphabet (barCount n)
 
 -- | Четыре режима отбора для сравнения кривых ошибки модели.
 --
@@ -110,10 +161,14 @@ noShort = compose barOpts {barShortOrder = 0} ring chordOf tonality alphabet 12
 
 -- | Средний сюрприз по позиции внутри такта.
 --
--- Краткосрочная память стирается на границе, поэтому первое событие фразы
--- обязано быть неожиданнее последнего. Плоский профиль означал бы, что
--- граница фразы ничем не отмечена и слушателю не за что зацепиться.
-profileOf :: Int -> [Bar Int Int] -> [Double]
+-- Пик на нулевой позиции означает, что граница такта чем-то отмечена и
+-- слушателю есть за что зацепиться. Плоский профиль означает, что такт для
+-- него не существует.
+--
+-- Числа на позицию усредняются по всем тактам, поэтому на коротком прогоне
+-- это шум: при двенадцати тактах ошибка среднего около половины бита, и
+-- «пик» может оказаться где угодно. Мерить надо на сотнях.
+profileOf :: Int -> [Bar s Int] -> [Double]
 profileOf shortOrder bs =
   [ mean [ss !! (b * len + p) | b <- [0 .. length bs - 1]]
   | p <- [0 .. len - 1]
@@ -123,12 +178,22 @@ profileOf shortOrder bs =
     ss = onlineSurprisalsSeg (newListenerWith (barOrder barOpts) shortOrder alphabet) (map barSyms bs)
     mean xs = sum xs / fromIntegral (length xs)
 
+-- | Отношение сюрприза на границе такта к среднему по остальным долям.
+-- Единица это плоский профиль, больше единицы - слышимая граница.
+frontRatio :: [Double] -> Double
+frontRatio [] = 1
+frontRatio (p0 : rest)
+  | null rest || tailMean' <= 0 = 1
+  | otherwise = p0 / tailMean'
+  where
+    tailMean' = sum rest / fromIntegral (length rest)
+
 baseline :: [Bar Int Int]
 baseline = compose barOpts {barCands = 1} ring chordOf tonality alphabet 12
 
 -- | След пьесы: причинное состояние перед каждым событием и сам символ.
 -- Это всё содержание трека; ниже из него выводится любая слышимая деталь.
-traceOf :: [Bar Int Int] -> ([Int], [Int])
+traceOf :: [Bar s Int] -> ([s], [Int])
 traceOf bs = (concatMap barStates bs, concatMap barSyms bs)
 
 -- | Гармония по состояниям и мелодия по символам.
@@ -136,17 +201,17 @@ traceOf bs = (concatMap barStates bs, concatMap barSyms bs)
 -- Два независимых канала: гармония несёт причинное состояние, мелодия
 -- несёт излучённый символ. Смешивать их нельзя, иначе слушателю не из чего
 -- разделить «где мы» и «что произошло».
-linesOf :: [Bar Int Int] -> ([[Double]], [Double])
-linesOf bs = (voices, melody)
+linesOf :: (s -> Chord) -> [Bar s Int] -> ([[Double]], [Double])
+linesOf chordFor bs = (voices, melody)
   where
     (states, syms) = traceOf bs
-    voices = voiceLines tonality 36 (map chordOf states)
+    voices = voiceLines tonality 36 (map chordFor states)
     -- Символ выбирает ступень над основанием аккорда, а не номер голоса.
     -- При трёх голосах и четырёх символах отображение в номер склеивало бы
     -- нулевой символ с третьим, то есть теряло бы информацию ровно там,
     -- где её надо передать.
     melody = degreeLine tonality 55 [root st + 2 * s | (st, s) <- zip states syms]
-    root st = minimum (chordDegrees (chordOf st))
+    root st = minimum (chordDegrees (chordFor st))
 
 -- Голоса ------------------------------------------------------------------------
 
@@ -175,13 +240,13 @@ pluck n =
 
 -- | Стемы прогона. Корень имени приходит снаружи: два прогона рядом не
 -- должны спорить за одни и те же промежуточные файлы.
-track :: String -> [Bar Int Int] -> [Stem]
-track name bs =
+track :: (s -> Chord) -> String -> [Bar s Int] -> [Stem]
+track chordFor name bs =
   [ stem (name <> "-harm") (takeSec total (play pad (slow barSec harm)))
   , stem (name <> "-mel") (takeSec total (play pluck (slow barSec mel)))
   ]
   where
-    (voices, melody) = linesOf bs
+    (voices, melody) = linesOf chordFor bs
     harm = harmonyPattern 27.5 (barLen barOpts) voices
     mel = melodyPattern 27.5 (barLen barOpts) melody
     -- Цикл в hsig это секунда, такт растягиваем до двух: восемь событий в
@@ -196,7 +261,16 @@ main = do
   let n = case args of
         (a : _) | [(k, "")] <- reads a -> k
         _ -> 12
+      -- Второй аргумент "noaudio" пропускает рендер. Профиль сюрприза и
+      -- кривые ошибки считаются из символов, а звук на длинном прогоне
+      -- занимает минуты: для замеров он лишний.
+      quiet = "noaudio" `elem` args
+      -- Та же длина, та же оснастка, другая машина: сравнивать профили
+      -- имеет смысл только при прочих равных.
+      ringBars = compose barOpts ring chordOf tonality alphabet (barCount n)
       bs = bars n
+      ringProfile = profileOf 0 ringBars
+      barProfile = profileOf 0 bs
       (states, syms) = traceOf bs
       -- Один корень имени на прогон: звук, стемы и картинки к нему
       -- складываются вместе, и длинный прогон не затирает калибровочный.
@@ -206,63 +280,66 @@ main = do
   -- репозитория (nix run) out/ ещё нет.
   createDirectoryIfMissing True "out"
   printf "тактов %d, длительность %d с\n" (length bs) (2 * length bs)
-  printf "h_mu   = %.4f бит на символ\n" (entropyRate ring)
-  printf "C_mu   = %.4f бит\n" (statComplexity ring)
+  printf "h_mu   = %.4f бит на символ\n" (entropyRate phrased)
+  printf "C_mu   = %.4f бит\n" (statComplexity phrased)
   printf "липшиц = %.3f, искажение = %.3f\n" lip dist'
   -- Картинки кладутся рядом со звуком и тем же прогоном: схема, разошедшаяся
   -- с машиной, врёт про то, что звучит, а сверять их руками никто не станет.
-  writeFile (path "-kernel.mmd") (mermaidOf ring stateLabel symLabel 0.02)
-  writeFile (path "-kernel.svg") (ringSvg defaultTheme ring semisLabel 0.05)
-  writeFile (path "-trace.svg") (traceSvg defaultTheme ring (barLen barOpts) 20 states)
+  writeFile (path "-kernel.mmd") (mermaidOf phrased stateLabel symLabel 0.02)
+  writeFile (path "-kernel.svg") (ringSvg defaultTheme phrased semisLabel 0.05)
+  writeFile (path "-trace.svg") (traceSvg defaultTheme phrased (barLen barOpts) 20 states)
   printf "картинки: %s-kernel.svg, %s-trace.svg, %s-kernel.mmd\n" (path "") (path "") (path "")
   -- Сравнение режимов отбора считает четыре пьесы, поэтому только на
   -- калибровочной длине. На длинном прогоне интересна одна кривая.
   if n <= 16
     then do
-      putStrLn "ошибка модели по тактам, четыре режима отбора:"
-      printf "  умолчание   %s\n" (curve bs)
+      putStrLn "ошибка модели по тактам, режимы отбора (на кольцевой машине):"
+      printf "  умолчание   %s\n" (curve ringBars)
       printf "  без краткой %s\n" (curve noShort)
       printf "  без порога  %s\n" (curve noTypical)
       printf "  с окном     %s\n" (curve withWindow)
       printf "  без выбора  %s\n" (curve baseline)
-      putStrLn "сюрприз по позиции внутри такта, бит:"
-      printf "  с краткой   %s\n" (row (profileOf (barShortOrder barOpts) bs))
-      printf "  без краткой %s\n" (row (profileOf 0 bs))
+      putStrLn "ошибка модели фразовой машины, по тактам:"
+      printf "  %s\n" (curve bs)
     else do
       putStrLn "ошибка модели, каждый восьмой такт:"
       printf "  %s\n" (curve (everyNth 8 bs))
   putStrLn "--- ядро ---"
-  printf "палитра в полутонах: %s\n" (show [map (`mod` 12) (chordSemis tonality c) | c <- stateChords])
-  printf "состояния: %s\n" (concatMap show (take 200 states))
+  printf "палитра в полутонах: %s\n" (show [map (`mod` 12) (chordSemis tonality c) | c <- phrasedChords])
+  printf "доли:      %s\n" (concatMap (show . fst) (take 200 states))
   printf "символы:   %s\n" (concatMap show (take 200 syms))
   printf
     "ядро %.0f бит; поток %d событий, из них неустранимых %.0f бит\n"
     kernelBits
     (length syms)
-    (fromIntegral (length syms) * entropyRate ring)
+    (fromIntegral (length syms) * entropyRate phrased)
   printf
     "нот в партитуре: гармония %d из %d слотов, мелодия %d из %d\n"
-    (3 * countRuns (fst (linesOf bs)))
+    (3 * countRuns (fst (linesOf phrasedChord bs)))
     (3 * length syms)
-    (countRuns (snd (linesOf bs)))
+    (countRuns (snd (linesOf phrasedChord bs)))
     (length syms)
-  renderTrack defaultEnv (path ".wav") (track name bs) >>= putStrLn
+  putStrLn "сюрприз по позиции внутри такта, бит:"
+  printf "  кольцо      %s   граница/остальные %.2f\n" (row ringProfile) (frontRatio ringProfile)
+  printf "  фразовая    %s   граница/остальные %.2f\n" (row barProfile) (frontRatio barProfile)
+  if quiet
+    then putStrLn "рендер пропущен"
+    else renderTrack defaultEnv (path ".wav") (track phrasedChord name bs) >>= putStrLn
   where
-    stateLabel s = show s <> ": " <> show (semis s)
+    stateLabel (p, m) = show p <> "." <> show m
     semisLabel = unwords . map show . semis
-    semis s = map (`mod` 12) (chordSemis tonality (chordOf s))
-    symLabel x = ["стоять", "вперёд", "назад", "через одну"] !! x
+    semis s = map (`mod` 12) (chordSemis tonality (phrasedChord s))
+    symLabel x = show x
     everyNth k xs = [x | (i, x) <- zip [0 :: Int ..] xs, i `mod` k == 0]
-    -- Размер описания ядра: таблица сдвигов, разбиение состояний на три
-    -- класса поведения и сами распределения с точностью до сотой.
+    -- Размер описания фразовой машины: длина такта, число наклонений, два
+    -- распределения по три свободных веса с точностью до сотой.
     kernelBits :: Double
     kernelBits =
-      4 * logBase 2 6 -- delta: четыре значения по модулю шесть
-        + 6 * logBase 2 3 -- какое состояние к какому классу
-        + 9 * logBase 2 100 -- три строки по три свободных веса
+      logBase 2 16 -- длина такта
+        + logBase 2 4 -- сколько наклонений
+        + 6 * logBase 2 100 -- два распределения по три свободных веса
     countRuns evs = sum [length (runsOf bar) | bar <- chunksOf (barLen barOpts) evs]
     curve bs = unwords [printf "%5.2f" (barError b) :: String | b <- bs]
     row vs = unwords [printf "%5.2f" v :: String | v <- vs]
-    d = distMatrix (map (\s -> unfoldPred (machineOut ring) (machineStep ring) s) (machineStates ring))
-    lip = lipschitz tonality stateChords d
-    dist' = distortion tonality stateChords d
+    lip = lipschitz tonality phrasedChords phrasedDist
+    dist' = distortion tonality phrasedChords phrasedDist

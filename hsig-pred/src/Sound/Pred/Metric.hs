@@ -13,6 +13,7 @@ module Sound.Pred.Metric
   ( bisimDist
   , bisimDistWith
   , distMatrix
+  , distMatrixWith
   , defaultDepth
   , defaultGamma
   ) where
@@ -56,4 +57,16 @@ bisimDistWith depth gamma = go depth
 
 -- | Матрица попарных расстояний, симметричная, с нулями на диагонали.
 distMatrix :: (Ord a) => [Pred a] -> [[Double]]
-distMatrix ms = [[bisimDist s t | t <- ms] | s <- ms]
+distMatrix = distMatrixWith defaultDepth defaultGamma
+
+-- | Матрица с явной глубиной.
+--
+-- Глубину приходится поднимать, когда состояния расходятся не сразу.
+-- У машины с периодом в такт доли отличаются только тем, через сколько
+-- шагов придёт объявление новой фразы: на глубине четыре первые доли
+-- неразличимы, попадают в один аккорд, и гармония перестаёт следить за
+-- долей. Признак в укладке виден сразу - искажение уходит в бесконечность.
+--
+-- Цена: размер алфавита в степени глубины на каждую пару.
+distMatrixWith :: (Ord a) => Int -> Double -> [Pred a] -> [[Double]]
+distMatrixWith depth gamma ms = [[bisimDistWith depth gamma s t | t <- ms] | s <- ms]

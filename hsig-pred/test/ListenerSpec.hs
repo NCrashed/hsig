@@ -214,6 +214,35 @@ shortTermTests =
     , testCase "сегментированный прогон даёт сюрприз на каждый символ" $ do
         let xs = take 96 (blocked 45)
         length (onlineSurprisalsSeg (newListenerWith 3 2 "ab") (chunk 16 xs)) @?= length xs
+    , -- Приёмочная проверка M5: профиль сюрприза по доле такта.
+      --
+      -- У стационарного процесса все доли статистически одинаковы, и
+      -- никакого профиля из него не выжать. Пик на границе обязан быть
+      -- свойством материала: период структуры должен совпадать с тактом.
+      -- Навязать его отбором значило бы врать про процесс.
+      testCase "пик на границе даёт период материала, а не память" $ do
+        let flatSeq = take 4000 (generateSeeded 51 (constPred (dist [('a', 0.7), ('b', 0.3)])))
+            -- Каждая восьмёрка начинается с равномерного объявления, потом
+            -- семь событий из выбранного объявлением наклонения.
+            phrasedSeq = concat [phrase i | i <- [0 .. 499]]
+            phrase i =
+              let u = uniformsFrom 52 !! i
+                  c = if u < 0.5 then 'a' else 'b'
+               in c : replicate 7 c
+            profile xs =
+              [ mean [ss !! (b * 8 + p) | b <- [0 .. length xs `div` 8 - 1]]
+              | p <- [0 .. 7]
+              ]
+              where
+                ss = onlineSurprisals (newListener 3 "ab") xs
+            ratio ps = case ps of { (p0 : rest) -> p0 / (sum rest / 7); [] -> 1 }
+            mean ys = sum ys / fromIntegral (length ys)
+        assertBool
+          ("стационарный профиль " <> show (profile flatSeq))
+          (abs (ratio (profile flatSeq) - 1) < 0.25)
+        assertBool
+          ("фразовый профиль " <> show (profile phrasedSeq))
+          (ratio (profile phrasedSeq) > 2)
     , testCase "обучение по фразам эквивалентно ручным границам" $ do
         let segs = chunk 16 (take 96 (blocked 46))
             byFold = trainSegmented (newListenerWith 3 2 "ab") segs
