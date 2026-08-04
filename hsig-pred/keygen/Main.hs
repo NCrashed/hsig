@@ -205,9 +205,26 @@ bars n = composeWith barOpts at chordOf tonality alphabet total
     total = max 1 n
     at i = churchAt (timeAt total i)
 
--- | Нормированное время такта.
+-- | Нормированное время такта с искривлением.
+--
+-- Не доля прошедших тактов, а её степень меньше единицы: дрейф идёт быстро
+-- в начале и замедляется к концу.
+--
+-- Это не вкусовая правка темпа, а согласование двух скоростей. Ошибка
+-- модели падает с 1.94 до 0.64 за семь тактов - слушатель усваивает быстрее
+-- всего именно в начале, когда его модель пуста. Равномерный дрейф в этот
+-- момент даёт ему меньше всего нового, и начало слышится вялым при том, что
+-- дальше всё в порядке. Замерено: за первые одиннадцать секунд чиптюн играл
+-- одну сильную долю, пилы молчали, гармония стояла на самом предсказуемом
+-- полюсе.
+--
+-- Показатель 0.6 подобран так, чтобы к пятому такту пройти четверть пути
+-- вместо десятой части. Активность партий зависит от того же времени,
+-- поэтому вступают они тоже раньше - отдельной правки не потребовалось.
 timeAt :: Int -> Int -> Double
-timeAt total i = if total <= 1 then 0 else fromIntegral i / fromIntegral (total - 1)
+timeAt total i
+  | total <= 1 = 0
+  | otherwise = (fromIntegral i / fromIntegral (total - 1)) ** 0.6
 
 -- | Ноты по партиям, с пропусками там, где режим партию не пускает.
 --
@@ -226,17 +243,43 @@ linesOf bs = (onlyIn "organ" voices, onlyIn "chip" lead, bassLine, onlyIn "saws"
     mask part = [plays part (timeAt total i) p | i <- [0 .. total - 1], p <- [0 .. beats - 1]]
     onlyIn part xs = [if on then Just x else Nothing | (on, x) <- zip (mask part) xs]
 
-    voices = voiceLines tonality 35 (map chordOf states)
+    -- Звучащий аккорд считается по состоянию **и символу** вместе.
+    --
+    -- На сильной доле состояние ещё несёт прежнюю ступень, а новую называет
+    -- символ, излучаемый ровно на этом событии. Брать только состояние
+    -- значило откладывать смену гармонии на вторую долю - и это слышалось
+    -- не задержанием, а опозданием: задержание держит диссонанс на сильной
+    -- доле и разрешает на слабой, а тут на сильной стоял прежний аккорд, и
+    -- новый вваливался мимо неё.
+    chordsAt = [sounding st s | (st, s) <- zip states syms]
+    sounding (0, _) s = degreeChords !! s
+    sounding (_, d) _ = degreeChords !! d
+    voices = voiceLines tonality 35 chordsAt
     -- Символ это ступень лада: мелодия читается напрямую, без переводов.
     -- Символы 7 и 8 объявляют смену режима и звучат скачком вверх - это
     -- ровно то место, где происходит поворот, и слышать его надо.
-    lead = degreeLine tonality 64 [root st + s | (st, s) <- zip states syms]
-    bassLine = degreeLine tonality 16 [root st | st <- states]
+    -- Символ значит разное на разных долях, и мелодия обязана это учитывать.
+    -- На долях арпеджио он смещение по тону аккорда, и root + s даёт
+    -- аккордовый тон. На сильной доле он имя следующей ступени, и то же
+    -- сложение давало произвольный тон лада поверх ещё звучащего прежнего
+    -- аккорда - неаккордовый на большинстве сильных долей, отсюда и
+    -- диссонанс на каждом стыке.
+    --
+    -- Теперь объявление звучит основанием объявленной ступени: это
+    -- предъём, гармония приходит следом, а сведений в ноте столько же -
+    -- ступень по ней читается по-прежнему.
+    lead = degreeLine tonality 64 [leadDeg st s | (st, s) <- zip states syms]
+    leadDeg (0, _) s = rootOf s
+    leadDeg (_, d) s = rootOf d + s
+    rootOf d = minimum (chordDegrees (degreeChords !! d))
+    -- Бас и пилы идут по тому же звучащему аккорду, иначе низ разъедется с
+    -- гармонией ровно на сильной доле.
+    roots = [minimum (chordDegrees c) | c <- chordsAt]
+    bassLine = degreeLine tonality 16 roots
     -- Основание и квинта, регистр между басом и органом. Полудиапазон
     -- узкий: партия второго плана не должна разъезжаться по регистру,
     -- иначе она перестаёт быть подложкой и начинает спорить с органом.
-    sawVoices = voiceLinesIn tonality 22 6 [mkChord [root st, root st + 4] | st <- states]
-    root st = minimum (chordDegrees (chordOf st))
+    sawVoices = voiceLinesIn tonality 22 6 [mkChord [r, r + 4] | r <- roots]
 
 -- Голоса ----------------------------------------------------------------------
 
@@ -441,8 +484,8 @@ accentGatedVoice i = accentGated 27.5 0.5 beats . map (>>= pick)
 -- На стационарных машинах она не давала ничего - если не даст и здесь,
 -- значит дрейф не работает.
 whole :: Int -> Int -> [Bar s Int] -> Double
-whole short every bs = mean (onlineSurprisalsSeg lis segs)
+whole short period bs = mean (onlineSurprisalsSeg lis segs)
   where
     lis = newListenerWith (barOrder barOpts) short alphabet
-    segs = map concat (chunksOf (max 1 every) (map barSyms bs))
+    segs = map concat (chunksOf (max 1 period) (map barSyms bs))
     mean xs = sum xs / fromIntegral (length xs)
