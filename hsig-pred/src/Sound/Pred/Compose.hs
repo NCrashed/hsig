@@ -37,10 +37,15 @@ data BarOpts = BarOpts
   -- ^ сколько продолжений примерить
   , barVlMax :: Double
   -- ^ потолок скачка голосоведения внутри такта, полутонов
-  , barLo :: Double
-  -- ^ нижняя граница среднего сюрприза, бит
-  , barExcess :: Double
-  -- ^ насколько сюрприз может превышать ожидание слушателя, бит
+  , barTypical :: Maybe Double
+  -- ^ потолок среднего сюрприза такта __под истинной машиной__, бит.
+  -- Ограничивает «насколько редким бывает материал», не заглядывая в
+  -- слушателя, поэтому обратной связи не создаёт.
+  , barWindow :: Maybe (Double, Double)
+  -- ^ необязательное окно сюрприза __под моделью слушателя__: нижняя
+  -- граница в битах и допустимое превышение над его ожиданием. По
+  -- умолчанию 'Nothing', и это не лень, а измеренный результат: см.
+  -- 'defaultBarOpts'.
   , barProbes :: Int
   -- ^ сколько пробных контекстов меряют ошибку модели
   , barOrder :: Int
@@ -48,20 +53,42 @@ data BarOpts = BarOpts
   , barSeed :: Int
   }
 
--- | Восемь событий на такт.
+-- | Восемь событий на такт, окно сюрприза выключено.
 --
--- Нижняя граница сюрприза не ноль: такт, который слушатель предсказывает
--- целиком, ничему не учит. Верхняя задана не абсолютом, а превышением над
--- собственным ожиданием слушателя: в начале пьесы он не знает ничего, и
--- любой абсолютный потолок объявил бы шумом нормальную экспозицию.
+-- Выключено по измерению, а не по вкусу. Ошибка модели у слушателя за 12
+-- тактов на кольцевой машине из шести состояний:
+--
+-- > с окном      1.22 -> 3.25   (втрое хуже)
+-- > без окна     1.22 -> 0.33
+-- > без выбора   1.22 -> 0.93   (контроль, честная выборка)
+--
+-- Окно задавалось через сюрприз, то есть через правдоподобие кандидата под
+-- текущей моделью слушателя. Отбор по такому признаку оставляет типичное
+-- под уже выученным: слушатель получает подтверждение вместо поправки и
+-- уезжает от истины, оставаясь внутренне согласованным.
+--
+-- Правило общее: ограничение на отбор допустимо, только если оно не
+-- зависит от правдоподобия под моделью слушателя. Голосоведение и
+-- 'barTypical' таковы, окно сюрприза - нет. Разбор в docs/PRED.md, разд. 7.
+--
+-- 'barTypical' по умолчанию полтора бита, и на замеренной машине этот
+-- порог __не связывает__: кривые с ним и без него совпадают до сотых,
+-- средний сюрприз выбранных тактов под истинной машиной не превышает 1.29
+-- при её @h_mu = 0.75@.
+--
+-- Это сам по себе результат. Ожидалось, что жадный поиск уйдёт в редкие
+-- события, раз они информативнее всего. Он туда не уходит: выбранные такты
+-- неожиданны для слушателя (2.4-4.0 бита), оставаясь типичными для процесса.
+-- То есть педагогическая выборка здесь не смещает поток, а лишь переставляет
+-- порядок подачи. Порог оставлен как перила для машин с длинным хвостом.
 defaultBarOpts :: BarOpts
 defaultBarOpts =
   BarOpts
     { barLen = 8
     , barCands = 24
     , barVlMax = 5
-    , barLo = 0.25
-    , barExcess = 0.8
+    , barTypical = Just 1.5
+    , barWindow = Nothing
     , barProbes = 64
     , barOrder = 3
     , barSeed = 1
@@ -80,9 +107,11 @@ data Bar s a = Bar
   , barGain :: Double
   -- ^ падение ошибки модели у слушателя за такт, бит
   , barSurprisal :: Double
-  -- ^ средний сюрприз событий такта, бит
+  -- ^ средний сюрприз событий такта под моделью слушателя, бит
   , barExpected :: Double
   -- ^ средняя энтропия предсказаний слушателя на этом такте, бит
+  , barTrueSurp :: Double
+  -- ^ средний сюрприз событий такта под истинной машиной, бит
   , barLeap :: Double
   -- ^ наибольший скачок голосоведения, полутонов
   , barFeasible :: Bool
@@ -141,8 +170,8 @@ compose opts m chordOf sc alphabet total
           -- Ни один кандидат не влез в ограничения: берём наименее
           -- нарушающий, а не первый попавшийся, и честно помечаем такт.
           | otherwise = minimumBy (comparing violation) scored
-        Scored g surp expd leap (syms, sts, end) ok = picked
-        bar = Bar syms sts errBefore g surp expd leap ok
+        Scored g surp expd tsurp leap (syms, sts, end) ok = picked
+        bar = Bar syms sts errBefore g surp expd tsurp leap ok
         lis' = trainOn lis syms
 
     -- barLen >= 1 проверено выше, поэтому список состояний такта непуст.
@@ -156,21 +185,33 @@ compose opts m chordOf sc alphabet total
         x = sampleWith u (machineOut m s)
     walkBar _ s [] syms sts = (reverse syms, reverse sts, s)
 
-    score lis errBefore prev cand@(syms, sts, _) = Scored g surp expd leap cand ok
+    score lis errBefore prev cand@(syms, sts, _) = Scored g surp expd tsurp leap cand ok
       where
         g = errBefore - modelError m (trainOn lis syms) ps
         surp = mean (onlineSurprisals lis syms)
         expd = mean (onlineEntropies lis syms)
+        -- Сюрприз под истинной машиной: считается по её же состояниям,
+        -- поэтому от слушателя не зависит вообще.
+        tsurp = mean [surprisalOf (machineOut m s) x | (s, x) <- zip sts syms]
         cs = map chordOf sts
         line = maybe cs (: cs) prev
         leap = maximum (0 : zipWith (vlDist sc) line (drop 1 line))
-        ok = surp >= barLo opts && surp - expd <= barExcess opts && leap <= barVlMax opts
+        ok = inWindow surp expd && isTypical tsurp && leap <= barVlMax opts
 
-    violation s = below + above + over
+    inWindow surp expd = case barWindow opts of
+      Nothing -> True
+      Just (lo, excess) -> surp >= lo && surp - expd <= excess
+
+    isTypical tsurp = maybe True (tsurp <=) (barTypical opts)
+
+    violation s = windowMiss + rare + over
       where
-        below = max 0 (barLo opts - scoredSurp s)
-        above = max 0 (scoredSurp s - scoredExp s - barExcess opts)
         over = max 0 (scoredLeap s - barVlMax opts)
+        rare = maybe 0 (\t -> max 0 (scoredTrue s - t)) (barTypical opts)
+        windowMiss = case barWindow opts of
+          Nothing -> 0
+          Just (lo, excess) ->
+            max 0 (lo - scoredSurp s) + max 0 (scoredSurp s - scoredExp s - excess)
 
     mean xs = if null xs then 0 else sum xs / fromIntegral (length xs)
 
@@ -180,6 +221,7 @@ data Scored s a = Scored
   { scoreGain :: Double
   , scoredSurp :: Double
   , scoredExp :: Double
+  , scoredTrue :: Double
   , scoredLeap :: Double
   , _scoredCand :: ([a], [s], s)
   , scoreOk :: Bool

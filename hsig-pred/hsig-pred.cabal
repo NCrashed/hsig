@@ -63,6 +63,7 @@ test-suite hsig-pred-test
   -- -M4g: расходящаяся модель обязана падать по куче, а не вешать машину.
   ghc-options:    -threaded -rtsopts "-with-rtsopts=-N -M4g"
   other-modules:
+    ComposeSpec
     DistSpec
     KernelSpec
     ListenerSpec
@@ -70,9 +71,11 @@ test-suite hsig-pred-test
     MetricSpec
     ModelSpec
     OrbifoldSpec
+    RenderSpec
 
   build-depends:
     , base
+    , hsig
     , hsig-pred
     , tasty             >=1.5.4 && <1.6
     , tasty-hunit       >=0.10  && <0.11

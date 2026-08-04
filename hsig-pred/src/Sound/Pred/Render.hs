@@ -11,15 +11,18 @@
 -- косичка.
 module Sound.Pred.Render
   ( voiceLines
+  , degreeLine
   , hzOf
   , chunksOf
+  , runsOf
+  , sustained
   , harmonyPattern
   , melodyPattern
   ) where
 
 import Data.List (sort)
 import Sound.Pred.Orbifold
-import Sound.Sig.Score (Note, Pattern, cat, fastcat, noteOf, stack)
+import Sound.Sig.Score (Note, Pattern, cat, noteOf, stack, timecat)
 
 -- | Полутоны в герцы; @base@ это частота нулевого полутона.
 hzOf :: Double -> Double -> Double
@@ -63,19 +66,45 @@ voiceLines sc base = go Nothing . map (mkChord . chordDegrees)
               (p : _) -> p + 0.5
         liftTo bottom v = if v >= bottom then v else liftTo bottom (v + 12)
 
--- | Аккорды в партитуру: такт это цикл, внутри такта события подряд,
--- голоса одновременно.
-harmonyPattern :: Double -> Int -> [[Double]] -> Pattern Note
-harmonyPattern base n evs =
+-- | Одноголосная линия из ступеней: тот же выбор ближайшей октавы, что и у
+-- голосов аккорда, поэтому мелодия не прыгает через регистр на границе
+-- октавы лада.
+degreeLine :: Scale -> Double -> [Int] -> [Double]
+degreeLine sc base = map firstVoice . voiceLines sc base . map (\d -> mkChord [d])
+  where
+    firstVoice (x : _) = x
+    firstVoice [] = error "hsig-pred: пустой голос в линии"
+
+-- | Соседние одинаковые значения в пары «сколько подряд, что именно».
+runsOf :: (Eq a) => [a] -> [(Int, a)]
+runsOf [] = []
+runsOf (x : xs) = (1 + length same, x) : runsOf rest
+  where
+    (same, rest) = span (== x) xs
+
+-- | Партитура, где длительность ноты берётся из информации, а не из сетки.
+--
+-- Событие, ничего не изменившее, не получает новой атаки: оно продлевает
+-- предыдущую ноту. Это не украшение, а прямое следствие того, чем здесь
+-- считается смысл - предсказуемое событие не несёт информации, и отбивать
+-- его отдельно значит врать слуху о содержании.
+--
+-- Слияние идёт только внутри такта. Метрическая сетка задаётся снаружи и
+-- программой не выводится (docs/PRED.md, разд. 2), поэтому границу такта
+-- нота не переходит.
+sustained :: (Eq a) => Int -> (a -> Pattern Note) -> [a] -> Pattern Note
+sustained n toPat evs =
   cat
-    [ fastcat [stack [pure (noteOf (hzOf base s)) | s <- voices] | voices <- bar]
+    [ timecat [(fromIntegral k, toPat v) | (k, v) <- runsOf bar]
     | bar <- chunksOf n evs
     ]
 
--- | Мелодия: по ноте на событие, той же нарезкой по тактам.
+-- | Аккорды в партитуру: такт это цикл, голоса одновременно, повторы слиты.
+harmonyPattern :: Double -> Int -> [[Double]] -> Pattern Note
+harmonyPattern base n = sustained n chord
+  where
+    chord voices = stack [pure (noteOf (hzOf base s)) | s <- voices]
+
+-- | Мелодия: по ноте на событие той же нарезкой, повторы слиты.
 melodyPattern :: Double -> Int -> [Double] -> Pattern Note
-melodyPattern base n ss =
-  cat
-    [ fastcat [pure (noteOf (hzOf base s)) | s <- bar]
-    | bar <- chunksOf n ss
-    ]
+melodyPattern base n = sustained n (pure . noteOf . hzOf base)

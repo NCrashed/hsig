@@ -7,6 +7,7 @@
 -- гармонии.
 module Main (main) where
 
+import Data.Function ((&))
 import Sound.Pred.Compose
 import Sound.Pred.Dist qualified as D
 import Sound.Pred.Machine
@@ -14,7 +15,6 @@ import Sound.Pred.Metric (distMatrix)
 import Sound.Pred.Model (unfoldPred)
 import Sound.Pred.Orbifold
 import Sound.Pred.Render
-import Data.Function ((&))
 import Sound.Sig
 import System.IO (BufferMode (..), hSetBuffering, stdout)
 import Text.Printf (printf)
@@ -78,27 +78,41 @@ barOpts = defaultBarOpts {barLen = 8, barCands = 32, barVlMax = 5, barOrder = 3}
 bars :: [Bar Int Int]
 bars = compose barOpts ring chordOf tonality alphabet 12
 
--- | Контроль: тот же процесс без всякого выбора, один кандидат на такт.
+-- | Четыре режима отбора для сравнения кривых ошибки модели.
 --
--- Нужен, чтобы отличить обучение слушателя от работы жадного поиска. Если
--- ошибка модели у контроля падает, а у поиска растёт, виноват отбор, а не
--- слушатель.
+-- Разделяют гипотезы: виноват сам жадный критерий, виновато окно сюрприза,
+-- или не виноват никто и слушатель просто не учится.
+--
+-- * 'bars' - умолчание: выигрыш плюс порог типичности по истинной машине;
+-- * 'noTypical' - только выигрыш, без всяких ограничений;
+-- * 'withWindow' - выигрыш плюс окно сюрприза, режим-виновник;
+-- * 'baseline' - без выбора вообще, честная выборка из машины.
+withWindow :: [Bar Int Int]
+withWindow = compose barOpts {barWindow = Just (0.25, 0.8)} ring chordOf tonality alphabet 12
+
+noTypical :: [Bar Int Int]
+noTypical = compose barOpts {barTypical = Nothing} ring chordOf tonality alphabet 12
+
 baseline :: [Bar Int Int]
 baseline = compose barOpts {barCands = 1} ring chordOf tonality alphabet 12
 
--- | Гармония по событиям и мелодия из символов.
+-- | Гармония по состояниям и мелодия по символам.
 --
--- Мелодия берёт голос по номеру символа и поднимает его на октаву: символ
--- обязан быть слышен отдельно от состояния, иначе слушателю нечего
--- моделировать.
+-- Два независимых канала: гармония несёт причинное состояние, мелодия
+-- несёт излучённый символ. Смешивать их нельзя, иначе слушателю не из чего
+-- разделить «где мы» и «что произошло».
 lines' :: ([[Double]], [Double])
 lines' = (voices, melody)
   where
     states = concatMap barStates bars
     syms = concatMap barSyms bars
     voices = voiceLines tonality 36 (map chordOf states)
-    melody = [pick s vs | (s, vs) <- zip syms voices]
-    pick s vs = vs !! (s `mod` length vs) + 12
+    -- Символ выбирает ступень над основанием аккорда, а не номер голоса.
+    -- При трёх голосах и четырёх символах отображение в номер склеивало бы
+    -- нулевой символ с третьим, то есть теряло бы информацию ровно там,
+    -- где её надо передать.
+    melody = degreeLine tonality 55 [root st + 2 * s | (st, s) <- zip states syms]
+    root st = minimum (chordDegrees (chordOf st))
 
 -- Голоса ------------------------------------------------------------------------
 
@@ -146,22 +160,26 @@ main = do
   printf "C_mu   = %.4f бит\n" (statComplexity ring)
   printf "аккорды: %s\n" (show (map chordDegrees stateChords))
   printf "липшиц = %.3f, искажение = %.3f\n" lip dist'
-  putStrLn "такт  ошибка  выигрыш  сюрприз  ожидал  скачок  в окне"
+  putStrLn "такт  ошибка  выигрыш  сюрприз  ожидал  истина  скачок"
   mapM_ report (zip [1 :: Int ..] bars)
-  putStrLn "контроль без выбора: ошибка по тактам"
-  putStrLn (unwords [printf "%.2f" (barError b) | b <- baseline])
+  putStrLn "ошибка модели по тактам, четыре режима отбора:"
+  printf "  умолчание   %s\n" (curve bars)
+  printf "  без порога  %s\n" (curve noTypical)
+  printf "  с окном     %s\n" (curve withWindow)
+  printf "  без выбора  %s\n" (curve baseline)
   renderTrack defaultEnv "out/pred.wav" track >>= putStrLn
   where
+    curve bs = unwords [printf "%5.2f" (barError b) :: String | b <- bs]
     d = distMatrix (map (\s -> unfoldPred (machineOut ring) (machineStep ring) s) (machineStates ring))
     lip = lipschitz tonality stateChords d
     dist' = distortion tonality stateChords d
     report (i, b) =
       printf
-        "%4d  %6.3f  %7.4f  %7.3f  %6.3f  %6.1f  %s\n"
+        "%4d  %6.3f  %7.4f  %7.3f  %6.3f  %6.3f  %6.1f\n"
         i
         (barError b)
         (barGain b)
         (barSurprisal b)
         (barExpected b)
+        (barTrueSurp b)
         (barLeap b)
-        (if barFeasible b then "да" else "НЕТ")
