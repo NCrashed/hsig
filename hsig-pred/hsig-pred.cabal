@@ -99,3 +99,17 @@ executable keygen
     , filepath
     , hsig
     , hsig-pred
+
+executable analyze
+  import:         opts
+  hs-source-dirs: analyze
+  main-is:        Main.hs
+
+  -- -M4g: разбор десятиминутной записи не должен съедать машину.
+  ghc-options:    -threaded -rtsopts "-with-rtsopts=-N -M4g"
+  build-depends:
+    , base
+    , bytestring
+    , hsig-pred
+    , vector
+    , vector-fftw  >=0.1 && <0.2

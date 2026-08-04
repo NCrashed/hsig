@@ -50,6 +50,7 @@
           root = ./hsig-pred;
           fileset = pkgs.lib.fileset.unions [
             ./hsig-pred/hsig-pred.cabal
+            ./hsig-pred/analyze
             ./hsig-pred/demo
             ./hsig-pred/keygen
             ./hsig-pred/src
@@ -170,6 +171,9 @@
               # Примеры книги коммитятся сжатыми: 23 МБ wav в репозитории
               # это перебор, а mp3 весит около двух.
               pkgs.lame
+              # Разбор чужих записей (tools/analyze.sh): декодирование чужая
+              # задача, а разбор наш.
+              pkgs.ffmpeg
             ];
             shellHook = ''
               echo "hsig: cabal build | cabal test | cabal run demo"
