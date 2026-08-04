@@ -1,0 +1,79 @@
+cabal-version: 3.4
+name:          hsig-pred
+version:       0.1.0.0
+synopsis:      Предиктивные модели как музыка
+description:
+  Подпакет к hsig. Модель это коалгебра: состояние определено ровно тем, что
+  оно предсказывает. Пьеса это её след, уложенный в орбифолд аккордов так,
+  что близость предсказаний становится близостью голосоведения.
+  Концепт и дорожная карта: docs/PRED.md.
+
+-- license-file не указан намеренно: он лежит в корне репозитория, а
+-- относительный путь наружу ломает sdist.
+license:       MIT
+copyright:     (c) 2026 Anton Gushcha
+author:        Anton Gushcha
+maintainer:    ncrashed@gmail.com
+category:      Sound
+build-type:    Simple
+tested-with:   GHC ==9.10.3
+
+common opts
+  default-language: GHC2021
+  ghc-options:
+    -Wall -Wcompat -Widentities -Wincomplete-record-updates
+    -Wincomplete-uni-patterns -Wmissing-export-lists -Wpartial-fields
+    -Wredundant-constraints -O2 -funbox-strict-fields -haddock
+
+library
+  import:          opts
+  hs-source-dirs:  src
+  exposed-modules:
+    Sound.Pred.Compose
+    Sound.Pred.Dist
+    Sound.Pred.Kernel
+    Sound.Pred.Listener
+    Sound.Pred.Machine
+    Sound.Pred.Metric
+    Sound.Pred.Model
+    Sound.Pred.Orbifold
+    Sound.Pred.Render
+
+  build-depends:
+    , base        >=4.19 && <5
+    , containers  >=0.6  && <0.9
+    , hsig
+
+executable pred-demo
+  import:         opts
+  hs-source-dirs: demo
+  main-is:        Main.hs
+  ghc-options:    -threaded -rtsopts "-with-rtsopts=-N -M4g"
+  build-depends:
+    , base
+    , hsig
+    , hsig-pred
+
+test-suite hsig-pred-test
+  import:         opts
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is:        Main.hs
+
+  -- -M4g: расходящаяся модель обязана падать по куче, а не вешать машину.
+  ghc-options:    -threaded -rtsopts "-with-rtsopts=-N -M4g"
+  other-modules:
+    DistSpec
+    KernelSpec
+    ListenerSpec
+    MachineSpec
+    MetricSpec
+    ModelSpec
+    OrbifoldSpec
+
+  build-depends:
+    , base
+    , hsig-pred
+    , tasty             >=1.5.4 && <1.6
+    , tasty-hunit       >=0.10  && <0.11
+    , tasty-quickcheck  >=0.10  && <0.12

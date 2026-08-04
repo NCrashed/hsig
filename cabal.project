@@ -1,3 +1,5 @@
-packages: .
+packages:
+  .
+  hsig-pred
 
 tests: True
