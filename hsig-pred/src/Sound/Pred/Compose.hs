@@ -49,7 +49,11 @@ data BarOpts = BarOpts
   , barProbes :: Int
   -- ^ сколько пробных контекстов меряют ошибку модели
   , barOrder :: Int
-  -- ^ порядок слушателя
+  -- ^ порядок долговременной памяти слушателя
+  , barShortOrder :: Int
+  -- ^ порядок краткосрочной памяти; ноль означает «её нет»
+  , barPhrase :: Int
+  -- ^ через сколько тактов ставится граница фразы, ноль означает «никогда»
   , barSeed :: Int
   }
 
@@ -91,6 +95,11 @@ defaultBarOpts =
     , barWindow = Nothing
     , barProbes = 64
     , barOrder = 3
+    , barShortOrder = 3
+    , -- Граница на каждом такте. Это единственная ручка, которой можно
+      -- влиять на слушателя, ничего не меняя в потоке символов, и потому
+      -- единственная безопасная (см. разбор смещения отбора в разд. 7).
+      barPhrase = 1
     , barSeed = 1
     }
 
@@ -142,25 +151,44 @@ probesOf m order n seed =
 
 -- | Ошибка модели: среднее расхождение предсказаний слушателя с истинными
 -- по пробным точкам, в битах.
+--
+-- Меряется по __долговременной__ памяти. Краткосрочная стирается на каждой
+-- границе фразы, и усвоение процесса через неё оценивать бессмысленно: она
+-- показывает внутрифразовую повторность, а не знание машины. Мерь через
+-- полного слушателя - и композитору станет выгодно делать такты
+-- самоповторными: измеренная ошибка упадёт, а научится слушатель ровно
+-- ничему. Замерено: с полным слушателем жадный отбор проигрывает даже
+-- отсутствию выбора.
 modelError :: (Ord a) => Machine s a -> Listener a -> [([a], s)] -> Double
 modelError m lis ps
   | null ps = 0
-  | otherwise = sum [kl (machineOut m s) (predictAfter lis (reverse h)) | (h, s) <- ps] / fromIntegral (length ps)
+  | otherwise = sum [kl (machineOut m s) (predictLongAfter lis (reverse h)) | (h, s) <- ps] / fromIntegral (length ps)
 
 -- | Сочинить заданное число тактов.
 compose :: (Ord a) => BarOpts -> Machine s a -> (s -> Chord) -> Scale -> [a] -> Int -> [Bar s a]
 compose opts m chordOf sc alphabet total
   | barLen opts < 1 = error "hsig-pred: такт короче одного события"
-  | otherwise = go total 0 (machineStart m) (newListener (barOrder opts) alphabet) Nothing
+  | otherwise = go total 0 (machineStart m) start Nothing
   where
+    start = newListenerWith (barOrder opts) (barShortOrder opts) alphabet
     ps = probesOf m (barOrder opts) (barProbes opts) (barSeed opts + 9973)
+
+    -- Граница фразы ставится перед тактом, а не после: краткосрочная память
+    -- обязана быть пуста ровно тогда, когда фраза начинается. Отсюда же и
+    -- то, что кандидаты оцениваются уже за границей - именно такого
+    -- слушателя они и встретят.
+    atBoundary i l
+      | barPhrase opts <= 0 = l
+      | i `mod` barPhrase opts == 0 = boundary l
+      | otherwise = l
 
     go 0 _ _ _ _ = []
     -- Следующему такту передаётся последний прозвучавший аккорд, а не
     -- аккорд конечного состояния: конечное состояние прозвучит уже в
     -- следующем такте, и стык обязан считаться по слышимому.
-    go n i st lis prev = bar : go (n - 1) (i + 1) end lis' (Just (chordOf (lastState sts)))
+    go n i st lis0 prev = bar : go (n - 1) (i + 1) end lis' (Just (chordOf (lastState sts)))
       where
+        lis = atBoundary i lis0
         errBefore = modelError m lis ps
         cands = [sampleBar st (barSeed opts + i * 7919 + j) | j <- [0 .. barCands opts - 1]]
         scored = map (score lis errBefore prev) cands

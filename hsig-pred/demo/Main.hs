@@ -11,6 +11,7 @@ import Data.Function ((&))
 import Sound.Pred.Compose
 import Sound.Pred.Diagram
 import Sound.Pred.Dist qualified as D
+import Sound.Pred.Listener
 import Sound.Pred.Machine
 import Sound.Pred.Metric (distMatrix)
 import Sound.Pred.Model (unfoldPred)
@@ -101,6 +102,26 @@ withWindow = compose barOpts {barWindow = Just (0.25, 0.8)} ring chordOf tonalit
 
 noTypical :: [Bar Int Int]
 noTypical = compose barOpts {barTypical = Nothing} ring chordOf tonality alphabet 12
+
+-- | Без краткосрочной памяти: слушатель помнит всё и ничего не забывает на
+-- границах фраз.
+noShort :: [Bar Int Int]
+noShort = compose barOpts {barShortOrder = 0} ring chordOf tonality alphabet 12
+
+-- | Средний сюрприз по позиции внутри такта.
+--
+-- Краткосрочная память стирается на границе, поэтому первое событие фразы
+-- обязано быть неожиданнее последнего. Плоский профиль означал бы, что
+-- граница фразы ничем не отмечена и слушателю не за что зацепиться.
+profileOf :: Int -> [Bar Int Int] -> [Double]
+profileOf shortOrder bs =
+  [ mean [ss !! (b * len + p) | b <- [0 .. length bs - 1]]
+  | p <- [0 .. len - 1]
+  ]
+  where
+    len = barLen barOpts
+    ss = onlineSurprisalsSeg (newListenerWith (barOrder barOpts) shortOrder alphabet) (map barSyms bs)
+    mean xs = sum xs / fromIntegral (length xs)
 
 baseline :: [Bar Int Int]
 baseline = compose barOpts {barCands = 1} ring chordOf tonality alphabet 12
@@ -200,9 +221,13 @@ main = do
     then do
       putStrLn "ошибка модели по тактам, четыре режима отбора:"
       printf "  умолчание   %s\n" (curve bs)
+      printf "  без краткой %s\n" (curve noShort)
       printf "  без порога  %s\n" (curve noTypical)
       printf "  с окном     %s\n" (curve withWindow)
       printf "  без выбора  %s\n" (curve baseline)
+      putStrLn "сюрприз по позиции внутри такта, бит:"
+      printf "  с краткой   %s\n" (row (profileOf (barShortOrder barOpts) bs))
+      printf "  без краткой %s\n" (row (profileOf 0 bs))
     else do
       putStrLn "ошибка модели, каждый восьмой такт:"
       printf "  %s\n" (curve (everyNth 8 bs))
@@ -237,6 +262,7 @@ main = do
         + 9 * logBase 2 100 -- три строки по три свободных веса
     countRuns evs = sum [length (runsOf bar) | bar <- chunksOf (barLen barOpts) evs]
     curve bs = unwords [printf "%5.2f" (barError b) :: String | b <- bs]
+    row vs = unwords [printf "%5.2f" v :: String | v <- vs]
     d = distMatrix (map (\s -> unfoldPred (machineOut ring) (machineStep ring) s) (machineStates ring))
     lip = lipschitz tonality stateChords d
     dist' = distortion tonality stateChords d
