@@ -34,57 +34,122 @@ import Text.Printf (printf)
 beats :: Int
 beats = 8
 
--- | Символ это ступень лада, всегда и везде. На сильной доле он объявляет
--- новую гармонию, на остальных - берёт ноту арпеджио.
-alphabet :: [Int]
-alphabet = [0 .. 6]
-
--- | Куда разрешается ступень. Это и есть функциональная гармония, записанная
--- как распределение.
+-- | Символ это ступень лада, а два последних - объявление смены режима.
 --
--- Ради неё всё и затевалось: ступени различимы не тем, как они звучат, а
--- тем, куда они идут. Доминанта это «почти наверняка в тонику», и метрика
--- видит именно это. Если бы разрешение было одинаковым, все ступени были бы
--- бисимилярны и укладка потеряла бы смысл.
-resolves :: Int -> [(Int, Double)]
-resolves d = case d of
-  0 -> [(3, 0.30), (4, 0.30), (5, 0.20), (0, 0.20)] -- i: куда угодно
-  1 -> [(4, 0.70), (0, 0.15), (3, 0.15)] -- ii: в доминанту
-  2 -> [(5, 0.50), (3, 0.30), (6, 0.20)] -- III: по квинтам вниз
-  3 -> [(4, 0.60), (0, 0.20), (1, 0.20)] -- iv: в доминанту
-  4 -> [(0, 0.80), (5, 0.15), (4, 0.05)] -- V: в тонику
-  5 -> [(1, 0.40), (3, 0.30), (4, 0.30)] -- VI: в предъикт
-  _ -> [(2, 0.60), (0, 0.25), (4, 0.15)] -- VII: в медианту
+-- На сильной доле символ 0..6 называет новую ступень, а 7 и 8 говорят
+-- «каденция в другой режим». На остальных долях символ берёт ноту арпеджио,
+-- и 7 с 8 там не встречаются.
+alphabet :: [Int]
+alphabet = [0 .. 8]
 
--- | Фигура арпеджио по долям: вверх и вниз по тонам аккорда.
+-- | Сколько гармонических режимов.
+regimes :: Int
+regimes = 3
+
+-- | Стационарная модель исчерпывается: на этой машине слушатель выучивал
+-- её за восемь секунд, дальше кривая ошибки ползла (docs/PRED.md, разд. про
+-- нестационарность). У стационарного процесса избыточная энтропия конечна,
+-- и трёхминутная пьеса из него невозможна не по недоработке, а потому что
+-- передавать больше нечего.
+--
+-- Поэтому машин три, и переход между ними сам несёт информацию. Режимы
+-- отличаются и функциональной гармонией, и фигурой арпеджио: слушателю
+-- приходится переучивать оба слоя.
+resolvesIn :: Int -> Int -> [(Int, Double)]
+resolvesIn 0 d = case d of
+  -- Классический минор: доминанта разрешается почти наверняка.
+  0 -> [(3, 0.30), (4, 0.30), (5, 0.20), (0, 0.20)]
+  1 -> [(4, 0.70), (0, 0.15), (3, 0.15)]
+  2 -> [(5, 0.50), (3, 0.30), (6, 0.20)]
+  3 -> [(4, 0.60), (0, 0.20), (1, 0.20)]
+  4 -> [(0, 0.80), (5, 0.15), (4, 0.05)]
+  5 -> [(1, 0.40), (3, 0.30), (4, 0.30)]
+  _ -> [(2, 0.60), (0, 0.25), (4, 0.15)]
+resolvesIn 1 d = case d of
+  -- Плагальный: доминанты почти нет, ход по квартам, VII вместо V.
+  0 -> [(3, 0.45), (6, 0.30), (5, 0.15), (0, 0.10)]
+  1 -> [(3, 0.55), (6, 0.25), (0, 0.20)]
+  2 -> [(5, 0.45), (1, 0.35), (3, 0.20)]
+  3 -> [(0, 0.50), (6, 0.30), (5, 0.20)]
+  4 -> [(3, 0.45), (0, 0.35), (6, 0.20)]
+  5 -> [(3, 0.40), (2, 0.35), (1, 0.25)]
+  _ -> [(0, 0.55), (3, 0.30), (2, 0.15)]
+resolvesIn _ d =
+  -- Секвенция по квинтам вниз: внутри себя почти детерминирована, но это
+  -- совсем другая цепь, и выученное в других режимах тут не помогает.
+  [((d + 3) `mod` 7, 0.82), ((d + 1) `mod` 7, 0.12), (d, 0.06)]
+
+-- | Полная вероятность ухода в другой режим с этой ступени.
+--
+-- Уйти можно только с доминанты: смена тональности через каденцию, как это
+-- и делается. Заодно это ставит смену на слышимое место - слушатель уже
+-- ждёт разрешения, и вместо него приходит поворот.
+switchFrom :: Int -> Int -> Double
+switchFrom r d
+  | d /= dominantOf r = 0
+  | otherwise = 0.34
+  where
+    dominantOf 1 = 6 -- в плагальном роль доминанты у VII
+    dominantOf _ = 4
+
+-- | Распределение символов на сильной доле: ступени плюс два объявления.
+announce :: Int -> Int -> [(Int, Double)]
+announce r d =
+  [(x, w * (1 - sw)) | (x, w) <- resolvesIn r d]
+    <> (if sw > 0 then [(7, sw / 2), (8, sw / 2)] else [])
+  where
+    sw = switchFrom r d
+
+-- | Фигура арпеджио по долям, своя у каждого режима.
 --
 -- Почти детерминированная, и это тоже стиль: чиптюновое арпеджио не
 -- случайная последовательность, а узнаваемая фигура. Отсюда же берётся
--- профиль сюрприза - доли дёшевы, сильная доля дорога.
-figure :: Int -> Int
-figure p = [0, 0, 2, 4, 2, 0, 4, 2] !! (p `mod` beats)
-
-arpeggio :: Int -> [(Int, Double)]
-arpeggio p = (figure p, 0.85) : rest
+-- профиль сюрприза - доли дёшевы, сильная доля дорога. Разные фигуры по
+-- режимам означают, что при смене переучивать приходится и ритм.
+figure :: Int -> Int -> Int
+figure r p = table !! (p `mod` beats)
   where
-    rest = [(x, w) | (x, w) <- spread, x /= figure p]
+    table = case r of
+      0 -> [0, 0, 2, 4, 2, 0, 4, 2]
+      1 -> [0, 4, 2, 4, 0, 2, 4, 2]
+      _ -> [0, 2, 4, 6, 4, 2, 0, 2]
+
+arpeggio :: Int -> Int -> [(Int, Double)]
+arpeggio r p = (figure r p, 0.85) : rest
+  where
+    rest = [(x, w) | (x, w) <- spread, x /= figure r p]
     spread = [(0, 0.05), (2, 0.05), (4, 0.05), (6, 0.03), (1, 0.01), (3, 0.01), (5, 0.01)]
 
--- | Состояние: доля такта и ступень. На нулевой доле ступень это та, что
--- закончилась; символ выбирает следующую.
+-- | Состояние: режим, доля такта и ступень.
 --
--- Машина унифилярна: новая ступень читается прямо из объявляющего символа.
-church :: Machine (Int, Int) Int
+-- Машина унифилярна: и новая ступень, и новый режим читаются прямо из
+-- объявляющего символа.
+church :: Machine (Int, Int, Int) Int
 church =
   Machine
-    { machineStart = (0, 0)
-    , machineStates = [(p, d) | p <- [0 .. beats - 1], d <- [0 .. 6]]
-    , machineOut = \(p, d) -> D.dist (if p == 0 then resolves d else arpeggio p)
-    , machineStep = \(p, d) x ->
-        if p == 0
-          then (1, if x `elem` map fst (resolves d) then x else d)
-          else ((p + 1) `mod` beats, d)
+    { machineStart = (0, 0, 0)
+    , machineStates = [(r, p, d) | r <- [0 .. regimes - 1], p <- [0 .. beats - 1], d <- [0 .. 6]]
+    , machineOut = \(r, p, d) -> D.dist (if p == 0 then announce r d else arpeggio r p)
+    , machineStep = \(r, p, d) x ->
+        if p /= 0
+          then (r, (p + 1) `mod` beats, d)
+          else case x of
+            -- Смена режима приземляется на тонику: каденция обязана куда-то
+            -- разрешиться, иначе поворот не слышен как поворот.
+            7 -> ((r + 1) `mod` regimes, 1, 0)
+            8 -> ((r + 2) `mod` regimes, 1, 0)
+            _ -> (r, 1, if x <= 6 then x else d)
     }
+
+-- | Кто играет в этом режиме. Состав инструментов это рендер верхнего
+-- состояния, а не украшение: смена раздела отмечается тем, кто вступил и
+-- кто ушёл, и это самый быстро опознаваемый признак из всех.
+plays :: Int -> String -> Bool
+plays r part = case (r, part) of
+  (1, "chip") -> False
+  (1, "saws") -> False
+  (2, "organ") -> False
+  _ -> True
 
 -- Гармония ------------------------------------------------------------------
 
@@ -98,7 +163,7 @@ tonality = mkScale "harmonicMinor"
 -- сильной доле: они различаются выходом сразу, поэтому хватает малой
 -- глубины метрики.
 degreeDist :: [[Double]]
-degreeDist = distMatrixWith 5 defaultGamma [asPred (0, d) | d <- [0 .. 6]]
+degreeDist = distMatrixWith 5 defaultGamma [asPred (0, 0, d) | d <- [0 .. 6]]
   where
     asPred s = unfoldPred (machineOut church) (machineStep church) s
 
@@ -107,34 +172,55 @@ degreeChords = embed opts degreeDist
   where
     opts = defaultEmbed {embedScale = tonality, embedSpan = 5}
 
--- | Аккорд состояния. На сильной доле держится прежняя гармония: смена
--- приходит на вторую долю, то есть задержанием, как и положено.
-chordOf :: (Int, Int) -> Chord
-chordOf (_, d) = degreeChords !! d
+-- | Аккорд состояния: ступень, сдвинутая по режиму.
+--
+-- Укладываются семь ступеней одного режима, а режим добавляет
+-- диатонический перенос. Так и должно быть: перенос это точная симметрия
+-- пространства ступеней ('transposeDeg'), поэтому режим слышится сменой
+-- тонального центра, а не новой палитрой. Укладывать двадцать одно
+-- состояние в трёхголосие всё равно нечем - консонантных трезвучий в ладу
+-- ровно семь.
+chordOf :: (Int, Int, Int) -> Chord
+chordOf (r, _, d) = transposeDeg (shift r) (degreeChords !! d)
+  where
+    shift 1 = 3
+    shift 2 = 5
+    shift _ = 0
 
 -- Пьеса ---------------------------------------------------------------------
 
 barOpts :: BarOpts
 barOpts = defaultBarOpts {barLen = beats, barCands = 32, barVlMax = 6, barOrder = 3}
 
-bars :: Int -> [Bar (Int, Int) Int]
+bars :: Int -> [Bar (Int, Int, Int) Int]
 bars n = compose barOpts church chordOf tonality alphabet (max 1 n)
 
--- | Ноты: гармония по состояниям, мелодия по символам, пилы второго плана.
-linesOf :: [Bar (Int, Int) Int] -> ([[Double]], [Double], [Double], [[Double]])
-linesOf bs = (voices, lead, bassLine, sawVoices)
+-- | Ноты по партиям, с пропусками там, где режим партию не пускает.
+--
+-- Голоса ведутся насквозь, а гасятся уже после: голосоведение не должно
+-- рваться оттого, что партия помолчала - вернувшись, она обязана
+-- продолжить с той же высоты, а не начать заново.
+linesOf ::
+  [Bar (Int, Int, Int) Int] ->
+  ([Maybe [Double]], [Maybe Double], [Double], [Maybe [Double]])
+linesOf bs = (onlyIn "organ" voices, onlyIn "chip" lead, bassLine, onlyIn "saws" sawVoices)
   where
     states = concatMap barStates bs
     syms = concatMap barSyms bs
+    regimeOf (r, _, _) = r
+    onlyIn part xs = [if plays (regimeOf st) part then Just x else Nothing | (st, x) <- zip states xs]
+
     voices = voiceLines tonality 35 (map chordOf states)
     -- Символ это ступень лада: мелодия читается напрямую, без переводов.
+    -- Символы 7 и 8 объявляют смену режима и звучат скачком вверх - это
+    -- ровно то место, где происходит поворот, и слышать его надо.
     lead = degreeLine tonality 64 [root st + s | (st, s) <- zip states syms]
     bassLine = degreeLine tonality 16 [root st | st <- states]
     -- Основание и квинта, регистр между басом и органом. Полудиапазон
     -- узкий: партия второго плана не должна разъезжаться по регистру,
     -- иначе она перестаёт быть подложкой и начинает спорить с органом.
     sawVoices = voiceLinesIn tonality 22 6 [mkChord [root st, root st + 4] | st <- states]
-    root (_, d) = minimum (chordDegrees (degreeChords !! d))
+    root st = minimum (chordDegrees (chordOf st))
 
 -- Голоса ----------------------------------------------------------------------
 
@@ -222,7 +308,7 @@ nave x = (x * 0.72 + wet * 0.34) & allpass 0.0071 0.62 & allpass 0.0113 0.58
     -- единице: без него орган выходил за предел и мастер клипповал.
     wet = sum [comb t 0.72 x | t <- [0.0297, 0.0371, 0.0411, 0.0437]] * 0.07
 
-track :: String -> [Bar (Int, Int) Int] -> [Stem]
+track :: String -> [Bar (Int, Int, Int) Int] -> [Stem]
 track name bs =
   [ stem (name <> "-organ") (takeSec total (play organ (slow barSec harm) & nave))
   , stem (name <> "-chip") (takeSec total (play chip (slow barSec lead') & sidechain kickSig 0.4))
@@ -235,13 +321,13 @@ track name bs =
   ]
   where
     (voices, lead, bassLine, sawLines) = linesOf bs
-    harm = harmonyPattern 27.5 beats voices
-    lead' = accentPattern 27.5 0.45 beats lead
+    harm = harmonyGated 27.5 beats voices
+    lead' = accentGated 27.5 0.45 beats lead
     bassPat = accentPattern 27.5 0.6 beats bassLine
     -- Голоса пил разнесены по стемам, а не сложены в один: панорама у них
     -- разная, а стем несёт одну панораму.
-    sawPatL = accentHarmony 27.5 0.5 beats (map (take 1) sawLines)
-    sawPatR = accentHarmony 27.5 0.5 beats (map (drop 1) sawLines)
+    sawPatL = accentGatedVoice 0 sawLines
+    sawPatR = accentGatedVoice 1 sawLines
     -- Бочка на первой и пятой доле, малый на пятой, хэт на каждой.
     drumPat = notes "[bd hh] hh [bd hh] hh [sd hh] hh hh [hh hh]"
     -- share обязателен: сигнал используется четырьмя стемами, и без него
@@ -294,18 +380,43 @@ main = do
   writeFile (path "-kernel.svg") (ringSvg defaultTheme church (const "") 0.06)
   writeFile (path "-trace.svg") (traceSvg defaultTheme church beats 16 states)
   printf "картинки: %s-kernel.svg, %s-trace.svg\n" (path "") (path "")
-  printf "ошибка модели, каждый четвёртый такт: %s\n" (unwords [printf "%5.2f" (barError b) :: String | b <- everyNth 4 bs])
-  printf "ступени по тактам: %s\n" (concatMap (show . snd . head' . barStates) bs)
+  printf "ошибка по тактам: %s\n" (unwords [printf "%.2f" (barError b) :: String | b <- bs])
+  printf "режимы по тактам:  %s\n" (concatMap (show . reg . head' . barStates) bs)
+  printf "ступени по тактам: %s\n" (concatMap (show . deg . head' . barStates) bs)
   printf "сюрприз по доле: %s   граница/остальные %.2f\n" (unwords [printf "%5.2f" v :: String | v <- profileOf bs]) (frontRatio (profileOf bs))
+  printf "сюрприз по тактам (с краткой памятью): %s\n" (unwords [printf "%.1f" v :: String | v <- perBar bs])
   printf "нот: гармония %d, ведущий %d, бас %d, пилы %d\n" (3 * runs hv) (runs hl) (runs hb) (2 * runs hs)
   if quiet
     then putStrLn "рендер пропущен"
     else renderTrack defaultEnv (path ".wav") (track name bs) >>= putStrLn
   where
-    everyNth k xs = [x | (i, x) <- zip [0 :: Int ..] xs, i `mod` k == 0]
+    reg (r, _, _) = r
+    deg (_, _, d) = d
     head' xs = case xs of
       (x : _) -> x
       [] -> error "keygen: такт без состояний"
     runs :: (Eq a) => [a] -> Int
     runs evs = sum [length (runsOf bar) | bar <- chunksOf beats evs]
 
+
+-- | Один голос из многоголосной партии с пропусками.
+--
+-- Пилы разнесены по стемам, потому что панорама у них разная, а стем несёт
+-- одну панораму. Молчание режима при этом сохраняется.
+accentGatedVoice :: Int -> [Maybe [Double]] -> Pattern Note
+accentGatedVoice i = accentGated 27.5 0.5 beats . map (>>= pick)
+  where
+    pick vs = case drop i vs of
+      (x : _) -> Just x
+      [] -> Nothing
+
+-- | Средний сюрприз каждого такта у слушателя с краткосрочной памятью.
+--
+-- Долговременная память смену режима поглощает: она не забывает прежний и
+-- просто доучивает объединение. Скачок обязан быть виден именно у
+-- краткосрочной, потому что у неё меняется локальная статистика.
+perBar :: [Bar s Int] -> [Double]
+perBar bs = map mean (chunksOf beats ss)
+  where
+    ss = onlineSurprisalsSeg (newListenerWith (barOrder barOpts) 3 alphabet) (map barSyms bs)
+    mean xs = sum xs / fromIntegral (length xs)

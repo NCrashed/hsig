@@ -22,11 +22,13 @@ module Sound.Pred.Render
   , melodyPattern
   , accentPattern
   , accentHarmony
+  , harmonyGated
+  , accentGated
   ) where
 
 import Data.List (sort)
 import Sound.Pred.Orbifold
-import Sound.Sig.Score (Note (..), Pattern, cat, fastcat, noteOf, stack, timecat)
+import Sound.Sig.Score (Note (..), Pattern, cat, fastcat, noteOf, silence, stack, timecat)
 
 -- | Полутоны в герцы; @base@ это частота нулевого полутона.
 hzOf :: Double -> Double -> Double
@@ -139,9 +141,22 @@ sustained n toPat evs =
 
 -- | Аккорды в партитуру: такт это цикл, голоса одновременно, повторы слиты.
 harmonyPattern :: Double -> Int -> [[Double]] -> Pattern Note
-harmonyPattern base n = sustained n chord
+harmonyPattern base n = harmonyGated base n . map Just
+
+-- | То же с пропусками: @Nothing@ это молчание голоса на этом событии.
+--
+-- Нужно, когда состав инструментов сам несёт состояние: партия вступает и
+-- уходит не для разнообразия, а потому что этим отмечен раздел. Пропуск
+-- обязан быть тишиной, а не нотой нулевой громкости: иначе он считается и
+-- звучит, просто тихо.
+--
+-- Слияние повторов работает и здесь: подряд идущие пропуски становятся
+-- одной паузой, а не восемью.
+harmonyGated :: Double -> Int -> [Maybe [Double]] -> Pattern Note
+harmonyGated base n = sustained n chord
   where
-    chord voices = stack [pure (noteOf (hzOf base s)) | s <- voices]
+    chord Nothing = silence
+    chord (Just voices) = stack [pure (noteOf (hzOf base s)) | s <- voices]
 
 -- | Мелодия: по ноте на событие той же нарезкой, повторы слиты.
 --
@@ -168,9 +183,13 @@ firstOfRun (x : xs) = True : zipWith (/=) xs (x : xs)
 -- Громкость кладётся в 'noteAmp', и учитывать её обязан инструмент: рендер
 -- за него этого не делает.
 accentPattern :: Double -> Double -> Int -> [Double] -> Pattern Note
-accentPattern base quiet n ss =
+accentPattern base quiet n = accentGated base quiet n . map Just
+
+-- | То же с пропусками: @Nothing@ это молчание на этом событии.
+accentGated :: Double -> Double -> Int -> [Maybe Double] -> Pattern Note
+accentGated base quiet n ss =
   cat
-    [ fastcat [pure (hit base a s) | (a, s) <- bar]
+    [ fastcat [maybe silence (pure . hit base a) s | (a, s) <- bar]
     | bar <- chunksOf n (zip amps ss)
     ]
   where
