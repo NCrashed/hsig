@@ -54,6 +54,7 @@ newListener k alphabet
         , lisHist = []
         }
 
+-- | Наибольшая длина контекста, которую слушатель различает.
 listenerOrder :: Listener a -> Int
 listenerOrder = lisOrder
 

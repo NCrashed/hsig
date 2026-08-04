@@ -77,7 +77,7 @@ processTests =
       -- причинных состояниях.
       testCase "even даёт блоки единиц чётной длины" $ do
         let xs = take 5000 (generateSeeded 21 (toPred (evenProcess 0.5)))
-            runs = [length g | g <- group xs, head g == 1]
+            runs = [length g | g@(v : _) <- group xs, v == 1]
             complete = if null runs then [] else init runs
         assertBool ("нечётные блоки: " <> show (take 5 (filter odd complete))) (all even complete)
     , testCase "golden mean не даёт двух нулей подряд" $ do

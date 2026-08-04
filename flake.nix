@@ -41,6 +41,21 @@
           ];
         };
 
+      # Подпакет самодостаточен: своя корневая директория, свой cabal-файл,
+      # ссылок наружу нет. Поэтому и fileset короткий, и LICENSE тут не
+      # нужен (см. комментарий в hsig-pred.cabal).
+      hsigPredSource =
+        pkgs:
+        pkgs.lib.fileset.toSource {
+          root = ./hsig-pred;
+          fileset = pkgs.lib.fileset.unions [
+            ./hsig-pred/hsig-pred.cabal
+            ./hsig-pred/demo
+            ./hsig-pred/src
+            ./hsig-pred/test
+          ];
+        };
+
       # Измеренные характеристики головы (MIT KEMAR, компактный набор, 200 КБ).
       # В репозиторий не кладём: фиксированный хэш даёт ту же
       # воспроизводимость без бинарников в истории. Лицензия разрешает любое
@@ -78,6 +93,11 @@
                 '';
               }
             );
+
+            # Подпакет: предиктивные модели как музыка (docs/PRED.md).
+            # Зависимость от hsig разрешается через hfinal, то есть берётся
+            # ровно тот hsig, что собран рядом, а не из набора.
+            hsig-pred = hfinal.callCabal2nix "hsig-pred" (hsigPredSource pkgs) { };
           }
         );
     in
@@ -90,6 +110,7 @@
         {
           default = hp.hsig;
           hsig = hp.hsig;
+          hsig-pred = hp.hsig-pred;
 
           # Наружу для тех, кто делает треки в отдельном репозитории: путь
           # к набору HRTF задаётся переменной HSIG_HRTF (разд. 8, этап M10).
@@ -110,6 +131,14 @@
             program = "${pkgs.lib.getExe' hp.hsig "demo"}";
             meta.description = "Рендер демо-трека hsig";
           };
+
+          # Пишет комплект в ./out от текущего каталога: wav, схему ядра и
+          # полосу следа. Число тактов задаётся аргументом.
+          pred-demo = {
+            type = "app";
+            program = "${pkgs.lib.getExe' hp.hsig-pred "pred-demo"}";
+            meta.description = "Пьеса из предиктивной модели и картинки к ней";
+          };
         }
       );
 
@@ -120,7 +149,10 @@
         in
         {
           default = hp.shellFor {
-            packages = ps: [ ps.hsig ];
+            packages = ps: [
+              ps.hsig
+              ps.hsig-pred
+            ];
             withHoogle = true;
 
             # Путь к набору HRTF: библиотека и тесты читают его отсюда.
@@ -152,9 +184,10 @@
         }
       );
 
-      # nix flake check: собирает библиотеку и прогоняет tasty.
+      # nix flake check: собирает обе библиотеки и прогоняет tasty у каждой.
       checks = forAllSystems (pkgs: {
         hsig = (haskellPackagesFor pkgs).hsig;
+        hsig-pred = (haskellPackagesFor pkgs).hsig-pred;
       });
 
       # Для потребления hsig из других флейков.

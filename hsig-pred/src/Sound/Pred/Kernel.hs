@@ -61,21 +61,31 @@ substPred rules seed = unfoldPred out step (substWord rules seed)
     step (_ : rest) _ = rest
     step [] _ = error "hsig-pred: слово подстановки кончилось"
 
+-- | Туэ-Морс: @a -> ab@, @b -> ba@. Слово бескубно, то есть ни один блок не
+-- повторяется трижды подряд, и совпадает с чётностью числа единиц в
+-- двоичной записи номера.
 thueMorse :: Rules Char
 thueMorse = [('a', "ab"), ('b', "ba")]
 
+-- | Удвоение периода: @a -> ab@, @b -> aa@. Символическая динамика каскада
+-- удвоений в точке накопления.
 periodDoubling :: Rules Char
 periodDoubling = [('a', "ab"), ('b', "aa")]
 
+-- | Фибоначчи: @a -> ab@, @b -> a@. Длины итераций морфизма это числа
+-- Фибоначчи, отсюда имя.
 fibonacci :: Rules Char
 fibonacci = [('a', "ab"), ('b', "a")]
 
+-- | Бесконечное слово Туэ-Морса от затравки @a@: @abbabaab...@
 thueMorseWord :: String
 thueMorseWord = substWord thueMorse 'a'
 
+-- | Бесконечное слово удвоения периода от затравки @a@: @abaaabab...@
 periodDoublingWord :: String
 periodDoublingWord = substWord periodDoubling 'a'
 
+-- | Бесконечное слово Фибоначчи от затравки @a@: @abaababa...@
 fibonacciWord :: String
 fibonacciWord = substWord fibonacci 'a'
 

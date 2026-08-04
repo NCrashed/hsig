@@ -39,7 +39,10 @@ import Data.Map.Strict qualified as M
 import Data.Ord (Down (..))
 
 -- | Нормированное распределение. Конструктор скрыт: инвариант держит 'dist'.
-newtype Dist a = Dist {distPairs :: [(a, Double)]}
+newtype Dist a = Dist
+  { distPairs :: [(a, Double)]
+  -- ^ исходы с весами в каноническом порядке, в сумме единица
+  }
   deriving (Eq, Show)
 
 -- | Исходы в каноническом порядке.

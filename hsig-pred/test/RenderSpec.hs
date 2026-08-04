@@ -49,10 +49,10 @@ lineTests =
   testGroup
     "регистр"
     [ testCase "голоса первого аккорда идут снизу вверх" $ do
-        let [vs] = voiceLines major 36 [mkChord [0, 2, 4]]
+        let vs = concat (voiceLines major 36 [mkChord [0, 2, 4]])
         assertBool ("голоса " <> show vs) (and (zipWith (<) vs (drop 1 vs)))
     , testCase "первый голос не ниже базы" $ do
-        let [vs] = voiceLines major 36 [mkChord [0, 2, 4]]
+        let vs = concat (voiceLines major 36 [mkChord [0, 2, 4]])
         assertBool ("голоса " <> show vs) (minimum vs >= 36)
     , -- Смысл выбора ближайшей октавы: голос не прыгает через регистр,
       -- когда ступень переваливает за октаву лада.
@@ -62,7 +62,7 @@ lineTests =
             jumps = concat (zipWith (\a b -> zipWith (\x y -> abs (x - y)) a b) ls (drop 1 ls))
         assertBool ("скачки " <> show jumps) (maximum jumps <= 6)
     , testCase "линия из одной ступени повторяет себя" $ do
-        degreeLine major 48 [2, 2, 2] @?= replicate 3 (head (degreeLine major 48 [2]))
+        degreeLine major 48 [2, 2, 2] @?= concat (replicate 3 (degreeLine major 48 [2]))
     , testCase "герцы удваиваются на октаву" $ do
         near "hz" (2 * hzOf 55 0) (hzOf 55 12)
     ]

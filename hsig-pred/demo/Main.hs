@@ -17,7 +17,9 @@ import Sound.Pred.Model (unfoldPred)
 import Sound.Pred.Orbifold
 import Sound.Pred.Render
 import Sound.Sig
+import System.Directory (createDirectoryIfMissing)
 import System.Environment (getArgs)
+import System.FilePath ((</>))
 import System.IO (BufferMode (..), hSetBuffering, stdout)
 import Text.Printf (printf)
 
@@ -150,10 +152,12 @@ pluck n =
     & (* adsr 0.004 0.11 0.15 0.09 (noteDur n))
     & (* 0.34)
 
-track :: [Bar Int Int] -> [Stem]
-track bs =
-  [ stem "pred-harm" (takeSec total (play pad (slow barSec harm)))
-  , stem "pred-mel" (takeSec total (play pluck (slow barSec mel)))
+-- | Стемы прогона. Корень имени приходит снаружи: два прогона рядом не
+-- должны спорить за одни и те же промежуточные файлы.
+track :: String -> [Bar Int Int] -> [Stem]
+track name bs =
+  [ stem (name <> "-harm") (takeSec total (play pad (slow barSec harm)))
+  , stem (name <> "-mel") (takeSec total (play pluck (slow barSec mel)))
   ]
   where
     (voices, melody) = linesOf bs
@@ -173,19 +177,23 @@ main = do
         _ -> 12
       bs = bars n
       (states, syms) = traceOf bs
-      -- Один корень имени на прогон: звук и картинки к нему складываются
-      -- вместе и длинный прогон не затирает картинки калибровочного.
-      stem' = "out/" <> (if n == 12 then "pred" else "pred-" <> show n)
+      -- Один корень имени на прогон: звук, стемы и картинки к нему
+      -- складываются вместе, и длинный прогон не затирает калибровочный.
+      name = if n == 12 then "pred" else "pred-" <> show n
+      path suffix = "out" </> name <> suffix
+  -- Каталог создаётся до записи: картинки пишутся раньше рендера, и вне
+  -- репозитория (nix run) out/ ещё нет.
+  createDirectoryIfMissing True "out"
   printf "тактов %d, длительность %d с\n" (length bs) (2 * length bs)
   printf "h_mu   = %.4f бит на символ\n" (entropyRate ring)
   printf "C_mu   = %.4f бит\n" (statComplexity ring)
   printf "липшиц = %.3f, искажение = %.3f\n" lip dist'
   -- Картинки кладутся рядом со звуком и тем же прогоном: схема, разошедшаяся
   -- с машиной, врёт про то, что звучит, а сверять их руками никто не станет.
-  writeFile (stem' <> "-kernel.mmd") (mermaidOf ring stateLabel symLabel 0.02)
-  writeFile (stem' <> "-kernel.svg") (ringSvg defaultTheme ring semisLabel 0.05)
-  writeFile (stem' <> "-trace.svg") (traceSvg defaultTheme ring (barLen barOpts) 20 states)
-  printf "картинки: %s-kernel.svg, %s-trace.svg, %s-kernel.mmd\n" stem' stem' stem'
+  writeFile (path "-kernel.mmd") (mermaidOf ring stateLabel symLabel 0.02)
+  writeFile (path "-kernel.svg") (ringSvg defaultTheme ring semisLabel 0.05)
+  writeFile (path "-trace.svg") (traceSvg defaultTheme ring (barLen barOpts) 20 states)
+  printf "картинки: %s-kernel.svg, %s-trace.svg, %s-kernel.mmd\n" (path "") (path "") (path "")
   -- Сравнение режимов отбора считает четыре пьесы, поэтому только на
   -- калибровочной длине. На длинном прогоне интересна одна кривая.
   if n <= 16
@@ -213,7 +221,7 @@ main = do
     (3 * length syms)
     (countRuns (snd (linesOf bs)))
     (length syms)
-  renderTrack defaultEnv (stem' <> ".wav") (track bs) >>= putStrLn
+  renderTrack defaultEnv (path ".wav") (track name bs) >>= putStrLn
   where
     stateLabel s = show s <> ": " <> show (semis s)
     semisLabel = unwords . map show . semis

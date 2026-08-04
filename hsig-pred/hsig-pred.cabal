@@ -52,6 +52,8 @@ executable pred-demo
   ghc-options:    -threaded -rtsopts "-with-rtsopts=-N -M4g"
   build-depends:
     , base
+    , directory
+    , filepath
     , hsig
     , hsig-pred
 

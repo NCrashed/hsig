@@ -67,7 +67,7 @@ infoTests =
     [ testCase "точная модель не удивляется" $ do
         surprisals (counter 3) [0, 1, 2, 0] @?= [0, 0, 0, 0]
     , testCase "неожиданность это минус логарифм веса" $ do
-        near "I" 2 (head (surprisals (constPred (uniform "abcd")) "a"))
+        surprisals (constPred (uniform "abcd")) "a" @?= [2]
     , testCase "правдоподобие складывается из неожиданностей" $ do
         near "L" (-4) (logLik (constPred (uniform "abcd")) "ab")
     , testCase "энтропия детерминированной модели нулевая" $ do
@@ -87,14 +87,14 @@ mixtureTests =
       -- отсюда предсказание 0.1 + 0.8 * w. Число замкнутое, не эталонное.
       testCase "наблюдения схлопывают смесь к породившей" $ do
         let m = mixture [(1, biased 0.9), (1, biased 0.1)]
-            after = foldl observe m "aaaa"
+            heard = foldl observe m "aaaa"
             w = 0.9 ** 4 / (0.9 ** 4 + 0.1 ** 4)
-        near "p" (0.1 + 0.8 * w) (probOf 'a' (predict after))
+        near "p" (0.1 + 0.8 * w) (probOf 'a' (predict heard))
     , testCase "невозможная компонента умирает навсегда" $ do
         let dead = constPred (dirac 'b')
             m = mixture [(1, dead), (1, biased 0.5)]
-            after = observe m 'a'
-        near "p" 0.5 (probOf 'a' (predict after))
+            heard = observe m 'a'
+        near "p" 0.5 (probOf 'a' (predict heard))
     , testCase "смесь не удивляется сильнее лучшей компоненты" $ do
         let m = mixture [(1, biased 0.9), (1, biased 0.1)]
             best = biased 0.9
