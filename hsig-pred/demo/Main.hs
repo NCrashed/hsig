@@ -101,11 +101,15 @@ baseline = compose barOpts {barCands = 1} ring chordOf tonality alphabet 12
 -- Два независимых канала: гармония несёт причинное состояние, мелодия
 -- несёт излучённый символ. Смешивать их нельзя, иначе слушателю не из чего
 -- разделить «где мы» и «что произошло».
+-- | След пьесы: причинное состояние перед каждым событием и сам символ.
+-- Это всё содержание трека; ниже из него выводится любая слышимая деталь.
+trace' :: ([Int], [Int])
+trace' = (concatMap barStates bars, concatMap barSyms bars)
+
 lines' :: ([[Double]], [Double])
 lines' = (voices, melody)
   where
-    states = concatMap barStates bars
-    syms = concatMap barSyms bars
+    (states, syms) = trace'
     voices = voiceLines tonality 36 (map chordOf states)
     -- Символ выбирает ступень над основанием аккорда, а не номер голоса.
     -- При трёх голосах и четырёх символах отображение в номер склеивало бы
@@ -167,8 +171,33 @@ main = do
   printf "  без порога  %s\n" (curve noTypical)
   printf "  с окном     %s\n" (curve withWindow)
   printf "  без выбора  %s\n" (curve baseline)
+  putStrLn "--- ядро ---"
+  printf "состояния: %s\n" (concatMap show states)
+  printf "символы:   %s\n" (concatMap show syms)
+  printf "палитра в полутонах: %s\n" (show [map (`mod` 12) (chordSemis tonality c) | c <- stateChords])
+  printf "гармония по тактам: %s\n" (show (map (take 1 . barStates) bars))
+  printf
+    "ядро %.0f бит; поток %d событий, из них неустранимых %.0f бит\n"
+    kernelBits
+    (length syms)
+    (fromIntegral (length syms) * entropyRate ring)
+  printf
+    "нот в партитуре: гармония %d из %d слотов, мелодия %d из %d\n"
+    (3 * countRuns (fst lines'))
+    (3 * length syms)
+    (countRuns (snd lines'))
+    (length syms)
   renderTrack defaultEnv "out/pred.wav" track >>= putStrLn
   where
+    (states, syms) = trace'
+    -- Размер описания ядра: таблица сдвигов, разбиение состояний на три
+    -- класса поведения и сами распределения с точностью до сотой.
+    kernelBits :: Double
+    kernelBits =
+      4 * logBase 2 6 -- delta: четыре значения по модулю шесть
+        + 6 * logBase 2 3 -- какое состояние к какому классу
+        + 9 * logBase 2 100 -- три строки по три свободных веса
+    countRuns evs = sum [length (runsOf bar) | bar <- chunksOf (barLen barOpts) evs]
     curve bs = unwords [printf "%5.2f" (barError b) :: String | b <- bs]
     d = distMatrix (map (\s -> unfoldPred (machineOut ring) (machineStep ring) s) (machineStates ring))
     lip = lipschitz tonality stateChords d
